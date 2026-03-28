@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createInlineTranslationCoordinator,
+  ErrorCodes,
+  TranslationServiceError,
   type VisibleTranslationBlock,
   type VisibleTranslationBlockResult,
 } from '@/services/translators';
@@ -119,36 +121,115 @@ describe('createInlineTranslationCoordinator', () => {
     coordinator.dispose();
   });
 
-  it('deduplicates queued and in-flight blocks for the same generation', async () => {
+  it('deduplicates equivalent normalized texts while in flight and after completion', async () => {
+    const batch = createDeferred<VisibleTranslationBlockResult[]>();
+    const translateVisibleBlocks = vi.fn().mockReturnValue(batch.promise);
+    const onResults = vi.fn();
+
+    const coordinator = createInlineTranslationCoordinator({
+      translateVisibleBlocks,
+      onResults,
+      batchSize: 2,
+      maxConcurrentBatches: 1,
+      idleDebounceMs: 1,
+    });
+
+    coordinator.enqueue([{ id: 'first', text: 'Hello   world' }]);
+    coordinator.enqueue([{ id: 'second', text: 'Hello world' }]);
+
+    expect(translateVisibleBlocks).toHaveBeenCalledTimes(1);
+    expect(translateVisibleBlocks).toHaveBeenCalledWith([{ id: 'first', text: 'Hello   world' }]);
+
+    batch.resolve([{ id: 'first', originalText: 'Hello   world', translatedText: 'Ola mundo' }]);
+    await flushPromises();
+
+    expect(onResults).toHaveBeenCalledWith([
+      { id: 'first', originalText: 'Hello   world', translatedText: 'Ola mundo' },
+      { id: 'second', originalText: 'Hello world', translatedText: 'Ola mundo' },
+    ]);
+
+    coordinator.enqueue([{ id: 'third', text: ' Hello world ' }]);
+
+    expect(translateVisibleBlocks).toHaveBeenCalledTimes(1);
+    expect(onResults).toHaveBeenLastCalledWith([
+      { id: 'third', originalText: 'Hello world', translatedText: 'Ola mundo' },
+    ]);
+
+    coordinator.dispose();
+  });
+
+  it('retries transient failures once before succeeding', async () => {
+    vi.useFakeTimers();
+
     const firstBatch = createDeferred<VisibleTranslationBlockResult[]>();
     const secondBatch = createDeferred<VisibleTranslationBlockResult[]>();
     const translateVisibleBlocks = vi
       .fn()
       .mockReturnValueOnce(firstBatch.promise)
       .mockReturnValueOnce(secondBatch.promise);
+    const onResults = vi.fn();
+    const onError = vi.fn();
+
+    const coordinator = createInlineTranslationCoordinator({
+      translateVisibleBlocks,
+      onResults,
+      onError,
+      batchSize: 1,
+      maxConcurrentBatches: 1,
+      idleDebounceMs: 1,
+      retryLimit: 1,
+      retryDelayMs: 10,
+    });
+
+    coordinator.enqueue([{ id: 'retry', text: 'text' }]);
+    firstBatch.reject(new Error('Failed to fetch'));
+    await flushPromises();
+
+    expect(translateVisibleBlocks).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(10);
+
+    expect(translateVisibleBlocks).toHaveBeenCalledTimes(2);
+
+    secondBatch.resolve([{ id: 'retry', originalText: 'text', translatedText: 'texto' }]);
+    await flushPromises();
+
+    expect(onResults).toHaveBeenCalledWith([
+      { id: 'retry', originalText: 'text', translatedText: 'texto' },
+    ]);
+    expect(onError).not.toHaveBeenCalled();
+
+    coordinator.dispose();
+  });
+
+  it('does not retry non-transient quota failures', async () => {
+    const batch = createDeferred<VisibleTranslationBlockResult[]>();
+    const translateVisibleBlocks = vi.fn().mockReturnValue(batch.promise);
+    const onError = vi.fn();
 
     const coordinator = createInlineTranslationCoordinator({
       translateVisibleBlocks,
       onResults: vi.fn(),
+      onError,
       batchSize: 1,
       maxConcurrentBatches: 1,
       idleDebounceMs: 1,
+      retryLimit: 1,
+      retryDelayMs: 10,
     });
 
-    coordinator.enqueue([{ id: 'same', text: 'text' }]);
-    coordinator.enqueue([{ id: 'same', text: 'text' }]);
+    coordinator.enqueue([{ id: 'quota', text: 'text' }]);
+    batch.reject(
+      new TranslationServiceError(ErrorCodes.DAILY_QUOTA_EXCEEDED, {
+        code: ErrorCodes.DAILY_QUOTA_EXCEEDED,
+      }),
+    );
+    await flushPromises();
 
     expect(translateVisibleBlocks).toHaveBeenCalledTimes(1);
-
-    firstBatch.resolve([{ id: 'same', originalText: 'text', translatedText: 'texto' }]);
-    await flushPromises();
-
-    coordinator.enqueue([{ id: 'same', text: 'text' }]);
-
-    expect(translateVisibleBlocks).toHaveBeenCalledTimes(2);
-
-    secondBatch.resolve([{ id: 'same', originalText: 'text', translatedText: 'texto' }]);
-    await flushPromises();
+    expect(onError).toHaveBeenCalledWith(expect.any(TranslationServiceError), [
+      { id: 'quota', text: 'text' },
+    ]);
 
     coordinator.dispose();
   });
