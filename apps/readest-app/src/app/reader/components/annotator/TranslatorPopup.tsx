@@ -2,11 +2,16 @@ import React, { useEffect, useState } from 'react';
 import Popup from '@/components/Popup';
 import { Position } from '@/utils/sel';
 import { useAuth } from '@/context/AuthContext';
-import { useSettingsStore } from '@/store/settingsStore';
+import { useEnv } from '@/context/EnvContext';
 import { useTranslation } from '@/hooks/useTranslation';
 import { useTranslator } from '@/hooks/useTranslator';
+import {
+  getTranslationPreferences,
+  saveTranslationPreference,
+} from '@/helpers/translationSettings';
 import { TRANSLATOR_LANGS } from '@/services/constants';
 import { UseTranslatorOptions, getTranslators } from '@/services/translators';
+import { useReaderStore } from '@/store/readerStore';
 import Select from '@/components/Select';
 
 const notSupportedLangs = [''];
@@ -20,6 +25,7 @@ const generateTranslatorLangs = () => {
 const translatorLangs = generateTranslatorLangs();
 
 interface TranslatorPopupProps {
+  bookKey: string;
   text: string;
   position: Position;
   trianglePosition: Position;
@@ -34,6 +40,7 @@ interface TranslatorType {
 }
 
 const TranslatorPopup: React.FC<TranslatorPopupProps> = ({
+  bookKey,
   text,
   position,
   trianglePosition,
@@ -43,11 +50,14 @@ const TranslatorPopup: React.FC<TranslatorPopupProps> = ({
 }) => {
   const _ = useTranslation();
   const { token } = useAuth();
-  const { settings, setSettings } = useSettingsStore();
+  const { envConfig } = useEnv();
+  const { getViewSettings } = useReaderStore();
+  const viewSettings = getViewSettings(bookKey);
+  const translationPreferences = getTranslationPreferences(viewSettings);
   const [providers, setProviders] = useState<TranslatorType[]>([]);
   const [sourceLang, setSourceLang] = useState('AUTO');
-  const [targetLang, setTargetLang] = useState(settings.globalReadSettings.translateTargetLang);
-  const [provider, setProvider] = useState(settings.globalReadSettings.translationProvider);
+  const [targetLang, setTargetLang] = useState(translationPreferences.translateTargetLang);
+  const [provider, setProvider] = useState(translationPreferences.translationProvider);
   const [translation, setTranslation] = useState<string | null>(null);
   const [detectedSourceLang, setDetectedSourceLang] = useState<string | null>(null);
 
@@ -64,9 +74,9 @@ const TranslatorPopup: React.FC<TranslatorPopupProps> = ({
   };
 
   const handleTargetLangChange = (event: React.ChangeEvent<HTMLSelectElement>) => {
-    settings.globalReadSettings.translateTargetLang = event.target.value;
-    setSettings(settings);
-    setTargetLang(event.target.value);
+    const nextTargetLang = event.target.value;
+    setTargetLang(nextTargetLang);
+    void saveTranslationPreference(envConfig, bookKey, 'translateTargetLang', nextTargetLang);
   };
 
   const handleProviderChange = (event: React.ChangeEvent<HTMLSelectElement>) => {
@@ -77,11 +87,28 @@ const TranslatorPopup: React.FC<TranslatorPopupProps> = ({
     const selectedTranslator =
       availableTranslators.find((t) => t.name === requestedProvider) || availableTranslators[0]!;
     if (selectedTranslator) {
-      settings.globalReadSettings.translationProvider = selectedTranslator.name;
-      setSettings(settings);
       setProvider(selectedTranslator.name);
+      void saveTranslationPreference(
+        envConfig,
+        bookKey,
+        'translationProvider',
+        selectedTranslator.name,
+      );
     }
   };
+
+  useEffect(() => {
+    setTargetLang((currentTargetLang) =>
+      currentTargetLang === translationPreferences.translateTargetLang
+        ? currentTargetLang
+        : translationPreferences.translateTargetLang,
+    );
+    setProvider((currentProvider) =>
+      currentProvider === translationPreferences.translationProvider
+        ? currentProvider
+        : translationPreferences.translationProvider,
+    );
+  }, [translationPreferences.translateTargetLang, translationPreferences.translationProvider]);
 
   useEffect(() => {
     const availableProviders = translators.map((t) => {

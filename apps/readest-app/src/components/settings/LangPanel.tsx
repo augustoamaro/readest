@@ -6,6 +6,7 @@ import { useReaderStore } from '@/store/readerStore';
 import { useTranslation } from '@/hooks/useTranslation';
 import { useSettingsStore } from '@/store/settingsStore';
 import { saveViewSettings } from '@/helpers/settings';
+import { saveTranslationPreference } from '@/helpers/translationSettings';
 import { getTranslators } from '@/services/translators';
 import { useResetViewSettings } from '@/hooks/useResetSettings';
 import { TRANSLATED_LANGS, TRANSLATOR_LANGS } from '@/services/constants';
@@ -108,7 +109,7 @@ const LangPanel: React.FC<SettingsPanelPanelProp> = ({ bookKey, onRegisterReset 
   const handleSelectTranslationProvider = (event: React.ChangeEvent<HTMLSelectElement>) => {
     const option = event.target.value;
     setTranslationProvider(option);
-    saveViewSettings(envConfig, bookKey, 'translationProvider', option, false, false);
+    saveTranslationPreference(envConfig, bookKey, 'translationProvider', option);
     viewSettings.translationProvider = option;
     setViewSettings(bookKey, { ...viewSettings });
   };
@@ -122,7 +123,7 @@ const LangPanel: React.FC<SettingsPanelPanelProp> = ({ bookKey, onRegisterReset 
   const handleSelectTargetLang = (event: React.ChangeEvent<HTMLSelectElement>) => {
     const option = event.target.value;
     setTranslateTargetLang(option);
-    saveViewSettings(envConfig, bookKey, 'translateTargetLang', option, false, false);
+    saveTranslationPreference(envConfig, bookKey, 'translateTargetLang', option);
     viewSettings.translateTargetLang = option;
     setViewSettings(bookKey, { ...viewSettings });
   };

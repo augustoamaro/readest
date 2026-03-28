@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { FoliateView } from '@/types/view';
 import { UseTranslatorOptions } from '@/services/translators';
+import { getTranslationPreferences } from '@/helpers/translationSettings';
 import { useReaderStore } from '@/store/readerStore';
 import { useTranslator } from '@/hooks/useTranslator';
 import { useTranslation } from '@/hooks/useTranslation';
@@ -18,11 +19,12 @@ export function useTextTranslation(
   const _ = useTranslation();
   const { getViewSettings, getProgress, setIsLoading } = useReaderStore();
   const viewSettings = getViewSettings(bookKey);
+  const translationPreferences = getTranslationPreferences(viewSettings);
   const progress = getProgress(bookKey);
 
   const enabled = useRef(viewSettings?.translationEnabled);
-  const [provider, setProvider] = useState(viewSettings?.translationProvider);
-  const [targetLang, setTargetLang] = useState(viewSettings?.translateTargetLang);
+  const [provider, setProvider] = useState(translationPreferences.translationProvider);
+  const [targetLang, setTargetLang] = useState(translationPreferences.translateTargetLang);
   const showTranslateSourceRef = useRef(viewSettings?.showTranslateSource);
 
   const { translate } = useTranslator({
@@ -348,8 +350,8 @@ export function useTextTranslation(
     if (!viewSettings) return;
 
     const enabledChanged = enabled.current !== viewSettings.translationEnabled;
-    const providerChanged = provider !== viewSettings.translationProvider;
-    const targetLangChanged = targetLang !== viewSettings.translateTargetLang;
+    const providerChanged = provider !== translationPreferences.translationProvider;
+    const targetLangChanged = targetLang !== translationPreferences.translateTargetLang;
     const showTranslateSourceChanged =
       showTranslateSourceRef.current !== viewSettings.showTranslateSource;
 
@@ -358,11 +360,11 @@ export function useTextTranslation(
     }
 
     if (providerChanged) {
-      setProvider(viewSettings.translationProvider);
+      setProvider(translationPreferences.translationProvider);
     }
 
     if (targetLangChanged) {
-      setTargetLang(viewSettings.translateTargetLang);
+      setTargetLang(translationPreferences.translateTargetLang);
     }
 
     if (showTranslateSourceChanged) {
