@@ -5,3 +5,4 @@ export * from './preprocess';
 export * from './providers';
 export * from './service';
 export * from './facade';
+export * from './inlineCoordinator';
