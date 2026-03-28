@@ -21,8 +21,19 @@ export interface TranslateSelectionCommand extends UseTranslatorOptions {
   useCache?: boolean;
 }
 
+export interface VisibleTranslationBlock {
+  id: string;
+  text: string;
+}
+
+export interface VisibleTranslationBlockResult {
+  id: string;
+  originalText: string;
+  translatedText: string;
+}
+
 export interface TranslateVisibleBlocksCommand extends UseTranslatorOptions {
-  blocks: string[];
+  blocks: VisibleTranslationBlock[];
   provider?: TranslatorName;
   token?: string | null;
   useCache?: boolean;
@@ -61,7 +72,9 @@ export interface TranslationFacade {
   }) => TranslatorSelection;
   translateBatch: (command: TranslationBatchCommand) => Promise<string[]>;
   translateSelection: (command: TranslateSelectionCommand) => Promise<string>;
-  translateVisibleBlocks: (command: TranslateVisibleBlocksCommand) => Promise<string[]>;
+  translateVisibleBlocks: (
+    command: TranslateVisibleBlocksCommand,
+  ) => Promise<VisibleTranslationBlockResult[]>;
   translateChapter: (command: TranslateChapterCommand) => Promise<string[]>;
 }
 
@@ -128,11 +141,19 @@ export const createTranslationFacade = (
   const translateVisibleBlocks = async ({
     blocks,
     ...command
-  }: TranslateVisibleBlocksCommand): Promise<string[]> => {
-    return await translateBatch({
+  }: TranslateVisibleBlocksCommand): Promise<VisibleTranslationBlockResult[]> => {
+    if (blocks.length === 0) return [];
+
+    const translatedTexts = await translateBatch({
       ...command,
-      texts: blocks,
+      texts: blocks.map((block) => block.text),
     });
+
+    return blocks.map((block, index) => ({
+      id: block.id,
+      originalText: block.text,
+      translatedText: translatedTexts[index] || '',
+    }));
   };
 
   const translateChapter = async ({

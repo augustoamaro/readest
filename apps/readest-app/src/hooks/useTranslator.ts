@@ -38,6 +38,25 @@ export function useTranslator({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [provider]);
 
+  const handleTranslationError = useCallback(
+    (err: unknown) => {
+      if (err instanceof TranslationServiceError && err.code === ErrorCodes.DAILY_QUOTA_EXCEEDED) {
+        eventDispatcher.dispatch('toast', {
+          timeout: 5000,
+          message: _(
+            'Daily translation quota reached. Upgrade your plan to continue using AI translations.',
+          ),
+          type: 'error',
+        });
+        if (err.fallbackProvider) {
+          setSelectedProvider(err.fallbackProvider);
+          setTransltor(translationFacade.getProvider(err.fallbackProvider));
+        }
+      }
+    },
+    [_, setSelectedProvider, setTransltor],
+  );
+
   const translate = useCallback(
     async (
       input: string[],
@@ -61,33 +80,57 @@ export function useTranslator({
           useCache: options?.useCache ?? false,
         });
       } catch (err) {
-        if (
-          err instanceof TranslationServiceError &&
-          err.code === ErrorCodes.DAILY_QUOTA_EXCEEDED
-        ) {
-          eventDispatcher.dispatch('toast', {
-            timeout: 5000,
-            message: _(
-              'Daily translation quota reached. Upgrade your plan to continue using AI translations.',
-            ),
-            type: 'error',
-          });
-          if (err.fallbackProvider) {
-            setSelectedProvider(err.fallbackProvider);
-            setTransltor(translationFacade.getProvider(err.fallbackProvider));
-          }
-        }
+        handleTranslationError(err);
         throw err instanceof Error ? err : new Error(String(err));
       } finally {
         setLoading(false);
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [selectedProvider, sourceLang, targetLang, translator, token],
+    [selectedProvider, sourceLang, targetLang, translator, token, handleTranslationError],
+  );
+
+  const translateVisibleBlocks = useCallback(
+    async (
+      blocks: Array<{ id: string; text: string }>,
+      options?: { source?: string; target?: string; useCache?: boolean },
+    ) => {
+      if (blocks.length === 0) return [];
+
+      setLoading(true);
+
+      try {
+        return await translationFacade.translateVisibleBlocks({
+          blocks,
+          provider: selectedProvider,
+          sourceLang: options?.source || sourceLang,
+          targetLang: options?.target || targetLang || getLocale(),
+          enablePolishing,
+          enablePreprocessing,
+          token,
+          useCache: options?.useCache ?? false,
+        });
+      } catch (err) {
+        handleTranslationError(err);
+        throw err instanceof Error ? err : new Error(String(err));
+      } finally {
+        setLoading(false);
+      }
+    },
+    [
+      selectedProvider,
+      sourceLang,
+      targetLang,
+      enablePolishing,
+      enablePreprocessing,
+      token,
+      handleTranslationError,
+    ],
   );
 
   return {
     translate,
+    translateVisibleBlocks,
     translator,
     translators,
     loading,

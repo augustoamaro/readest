@@ -118,7 +118,10 @@ describe('translationFacade', () => {
     const facade = createTranslationFacade(dependencies);
 
     const blocks = await facade.translateVisibleBlocks({
-      blocks: ['a', 'b'],
+      blocks: [
+        { id: 'a', text: 'first block' },
+        { id: 'b', text: 'second block' },
+      ],
       provider: 'deepl',
     });
     const chapter = await facade.translateChapter({
@@ -126,11 +129,14 @@ describe('translationFacade', () => {
       provider: 'deepl',
     });
 
-    expect(blocks).toEqual(['tx:a', 'tx:b']);
+    expect(blocks).toEqual([
+      { id: 'a', originalText: 'first block', translatedText: 'tx:first block' },
+      { id: 'b', originalText: 'second block', translatedText: 'tx:second block' },
+    ]);
     expect(chapter).toEqual(['tx:p1', 'tx:p2']);
     expect(dependencies.translateTexts).toHaveBeenNthCalledWith(
       1,
-      expect.objectContaining({ input: ['a', 'b'] }),
+      expect.objectContaining({ input: ['first block', 'second block'] }),
     );
     expect(dependencies.translateTexts).toHaveBeenNthCalledWith(
       2,

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { FoliateView } from '@/types/view';
-import { UseTranslatorOptions } from '@/services/translators';
+import { UseTranslatorOptions, VisibleTranslationBlock } from '@/services/translators';
 import { getTranslationPreferences } from '@/helpers/translationSettings';
 import { useReaderStore } from '@/store/readerStore';
 import { useTranslator } from '@/hooks/useTranslator';
@@ -27,18 +27,19 @@ export function useTextTranslation(
   const [targetLang, setTargetLang] = useState(translationPreferences.translateTargetLang);
   const showTranslateSourceRef = useRef(viewSettings?.showTranslateSource);
 
-  const { translate } = useTranslator({
+  const { translateVisibleBlocks } = useTranslator({
     provider,
     targetLang: targetLang || getLocale(),
   } as UseTranslatorOptions);
 
-  const translateRef = useRef(translate);
+  const translateVisibleBlocksRef = useRef(translateVisibleBlocks);
   const observerRef = useRef<IntersectionObserver | null>(null);
   const translatedElements = useRef<HTMLElement[]>([]);
   const allTextNodes = useRef<HTMLElement[]>([]);
   const translationQueue = useRef<HTMLElement[]>([]);
   const activeTranslations = useRef(0);
-  const MAX_CONCURRENT_TRANSLATIONS = 5;
+  const MAX_CONCURRENT_TRANSLATION_BATCHES = 2;
+  const MAX_TRANSLATION_BATCH_SIZE = 3;
   const pendingDOMUpdates = useRef<Array<() => void>>([]);
   const batchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -57,8 +58,8 @@ export function useTextTranslation(
   };
 
   useEffect(() => {
-    translateRef.current = translate;
-  }, [translate]);
+    translateVisibleBlocksRef.current = translateVisibleBlocks;
+  }, [translateVisibleBlocks]);
 
   const hintInitialTranslating = () => {
     setIsLoading(bookKey, true);
@@ -159,14 +160,25 @@ export function useTextTranslation(
   };
 
   const drainTranslationQueue = () => {
+    if (!enabled.current) return;
+
     while (
-      activeTranslations.current < MAX_CONCURRENT_TRANSLATIONS &&
+      activeTranslations.current < MAX_CONCURRENT_TRANSLATION_BATCHES &&
       translationQueue.current.length > 0
     ) {
-      const el = translationQueue.current.shift()!;
-      if (el.querySelector('.translation-target') || !enabled.current) continue;
+      const batch: HTMLElement[] = [];
+      while (
+        batch.length < MAX_TRANSLATION_BATCH_SIZE &&
+        translationQueue.current.length > 0 &&
+        enabled.current
+      ) {
+        const el = translationQueue.current.shift()!;
+        if (el.querySelector('.translation-target')) continue;
+        batch.push(el);
+      }
+      if (batch.length === 0) continue;
       activeTranslations.current++;
-      translateElement(el).finally(() => {
+      translateElements(batch).finally(() => {
         activeTranslations.current--;
         drainTranslationQueue();
       });
@@ -196,15 +208,8 @@ export function useTextTranslation(
     allTextNodes.current.forEach((el) => observer.observe(el));
   };
 
-  const translateElement = async (el: HTMLElement) => {
-    if (!enabled.current) return;
-    const text = el.textContent?.replaceAll('\n', '').trim();
-    if (!text) return;
-
-    if (el.classList.contains('translation-target')) {
-      return;
-    }
-
+  const translateElements = async (elements: HTMLElement[]) => {
+    if (!enabled.current || elements.length === 0) return;
     const updateSourceNodes = (element: HTMLElement) => {
       const hasDirectText = Array.from(element.childNodes).some(
         (node) => node.nodeType === Node.TEXT_NODE && node.textContent?.trim() !== '',
@@ -253,36 +258,65 @@ export function useTextTranslation(
     };
 
     try {
-      const translated = await translateRef.current([text]);
-      const translatedText = translated[0];
-      if (!translatedText || text === translatedText) return;
+      const blocks = elements.reduce<
+        Array<{ element: HTMLElement; block: VisibleTranslationBlock }>
+      >((acc, element, index) => {
+        if (element.classList.contains('translation-target')) return acc;
 
-      const wrapper = document.createElement('font');
-      wrapper.className = `translation-target ${!enabled.current ? 'hidden' : ''}`;
-      wrapper.setAttribute('translation-element-mark', '1');
-      wrapper.setAttribute('lang', targetLang || getLocale());
-      if (widthLineBreak) {
-        wrapper.appendChild(document.createElement('br'));
-      }
+        const text = element.textContent?.replaceAll('\n', '').trim();
+        if (!text) return acc;
 
-      const blockWrapper = document.createElement('font');
-      blockWrapper.className = `translation-target ${targetBlockClassName}`;
+        acc.push({
+          element,
+          block: {
+            id: `${index}`,
+            text,
+          },
+        });
+        return acc;
+      }, []);
 
-      const inner = document.createElement('font');
-      inner.className = 'translation-target target-inner target-inner-theme-none';
-      inner.textContent = translatedText;
+      if (blocks.length === 0) return;
 
-      blockWrapper.appendChild(inner);
-      wrapper.appendChild(blockWrapper);
+      const translatedBlocks = await translateVisibleBlocksRef.current(
+        blocks.map(({ block }) => block),
+      );
+      const translatedById = new Map(translatedBlocks.map((block) => [block.id, block]));
 
-      if (el.querySelector('.translation-target')) {
-        return;
-      }
-      batchDOMUpdate(() => {
-        if (!enabled.current || el.querySelector('.translation-target')) return;
-        updateSourceNodes(el);
-        el.appendChild(wrapper);
-        translatedElements.current.push(el);
+      blocks.forEach(({ element, block }) => {
+        const translatedText = translatedById.get(block.id)?.translatedText;
+        if (
+          !translatedText ||
+          block.text === translatedText ||
+          element.querySelector('.translation-target')
+        ) {
+          return;
+        }
+
+        const wrapper = document.createElement('font');
+        wrapper.className = `translation-target ${!enabled.current ? 'hidden' : ''}`;
+        wrapper.setAttribute('translation-element-mark', '1');
+        wrapper.setAttribute('lang', targetLang || getLocale());
+        if (widthLineBreak) {
+          wrapper.appendChild(document.createElement('br'));
+        }
+
+        const blockWrapper = document.createElement('font');
+        blockWrapper.className = `translation-target ${targetBlockClassName}`;
+
+        const inner = document.createElement('font');
+        inner.className = 'translation-target target-inner target-inner-theme-none';
+        inner.textContent = translatedText;
+
+        blockWrapper.appendChild(inner);
+        wrapper.appendChild(blockWrapper);
+
+        batchDOMUpdate(() => {
+          if (!enabled.current || element.querySelector('.translation-target')) return;
+          updateSourceNodes(element);
+          element.appendChild(wrapper);
+          translatedElements.current.push(element);
+        });
       });
     } catch (err) {
       console.warn('Translation failed:', err);
