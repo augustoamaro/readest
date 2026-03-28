@@ -70,6 +70,7 @@ describe('translationFacade', () => {
   it('sends translateBatch commands to the service with the expected normalized shape', async () => {
     const dependencies = createDependencies();
     const facade = createTranslationFacade(dependencies);
+    const signal = new AbortController().signal;
 
     const command: TranslationBatchCommand = {
       texts: ['one', 'two'],
@@ -78,6 +79,7 @@ describe('translationFacade', () => {
       targetLang: 'PT',
       token: 'token',
       useCache: true,
+      signal,
     };
 
     const result = await facade.translateBatch(command);
@@ -91,6 +93,7 @@ describe('translationFacade', () => {
       enablePreprocessing: true,
       token: 'token',
       useCache: true,
+      signal,
       translators: dependencies.getTranslators(),
     });
     expect(result).toEqual(['tx:one', 'tx:two']);

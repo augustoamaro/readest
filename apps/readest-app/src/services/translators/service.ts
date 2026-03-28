@@ -3,7 +3,12 @@ import { getFromCache, storeInCache } from './cache';
 import { polish } from './polish';
 import { preprocess } from './preprocess';
 import { getTranslators, TranslatorName } from './providers';
-import { ErrorCodes, TranslationProvider, UseTranslatorOptions } from './types';
+import {
+  ErrorCodes,
+  TranslationProvider,
+  TranslationRequestOptions,
+  UseTranslatorOptions,
+} from './types';
 
 export interface TranslatorSelection {
   selectedProvider: TranslatorName;
@@ -17,7 +22,7 @@ export interface TranslationServiceDependencies {
   preprocess: typeof preprocess;
 }
 
-export interface TranslateTextOptions extends UseTranslatorOptions {
+export interface TranslateTextOptions extends UseTranslatorOptions, TranslationRequestOptions {
   input: string[];
   provider: TranslatorName;
   token?: string | null;
@@ -43,6 +48,31 @@ export class TranslationServiceError extends Error {
     this.fallbackProvider = options?.fallbackProvider;
   }
 }
+
+export const createTranslationAbortError = () => {
+  if (typeof DOMException !== 'undefined') {
+    return new DOMException('Translation request aborted', 'AbortError');
+  }
+
+  const error = new Error('Translation request aborted');
+  error.name = 'AbortError';
+  return error;
+};
+
+export const isTranslationAbortError = (error: unknown) => {
+  return (
+    (typeof DOMException !== 'undefined' &&
+      error instanceof DOMException &&
+      error.name === 'AbortError') ||
+    (error instanceof Error && error.name === 'AbortError')
+  );
+};
+
+export const throwIfTranslationAborted = (signal?: AbortSignal) => {
+  if (signal?.aborted) {
+    throw createTranslationAbortError();
+  }
+};
 
 export const getAvailableTranslators = (
   token?: string | null,
@@ -87,10 +117,13 @@ export const translateTexts = async (
     enablePreprocessing = true,
     token,
     useCache = false,
+    signal,
     translators = getTranslators(),
   }: TranslateTextOptions,
   dependencies: TranslationServiceDependencies = defaultDependencies,
 ): Promise<string[]> => {
+  throwIfTranslationAborted(signal);
+
   const sourceLanguage = sourceLang;
   const targetLanguage = targetLang || getLocale();
   const textsToTranslate = enablePreprocessing ? dependencies.preprocess(input) : input;
@@ -120,6 +153,8 @@ export const translateTexts = async (
     }),
   );
 
+  throwIfTranslationAborted(signal);
+
   if (textsNeedingTranslation.length === 0) {
     const results = await Promise.all(
       textsToTranslate.map((text) =>
@@ -144,7 +179,10 @@ export const translateTexts = async (
       targetLanguage,
       token,
       useCache,
+      signal,
     );
+
+    throwIfTranslationAborted(signal);
 
     await Promise.all(
       textsNeedingTranslation.map(async (text, index) => {
@@ -157,6 +195,8 @@ export const translateTexts = async (
         );
       }),
     );
+
+    throwIfTranslationAborted(signal);
 
     const results = [...textsToTranslate];
     indicesNeedingTranslation.forEach((originalIndex, translationIndex) => {
@@ -186,6 +226,10 @@ export const translateTexts = async (
     return enablePolishing ? dependencies.polish(results, targetLanguage) : results;
   } catch (error) {
     const normalizedError = error instanceof Error ? error : new Error(String(error));
+
+    if (isTranslationAbortError(normalizedError)) {
+      throw normalizedError;
+    }
 
     if (normalizedError.message.includes(ErrorCodes.DAILY_QUOTA_EXCEEDED)) {
       throw new TranslationServiceError(normalizedError.message, {

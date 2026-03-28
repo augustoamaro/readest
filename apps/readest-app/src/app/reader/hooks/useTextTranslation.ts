@@ -78,7 +78,8 @@ export function useTextTranslation(
 
     coordinatorRef.current?.dispose();
     coordinatorRef.current = createInlineTranslationCoordinator({
-      translateVisibleBlocks: (blocks) => translateVisibleBlocksRef.current(blocks),
+      translateVisibleBlocks: (blocks, options) =>
+        translateVisibleBlocksRef.current(blocks, options),
       onResults: (results) => applyTranslatedBlocksRef.current(results),
       onError: (error, blocks) => handleTranslationErrorRef.current(error, blocks),
       onIdle: () => setIsLoading(bookKey, false),

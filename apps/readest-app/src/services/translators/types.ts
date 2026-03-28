@@ -1,5 +1,9 @@
 import { TranslatorName } from './providers';
 
+export interface TranslationRequestOptions {
+  signal?: AbortSignal;
+}
+
 export interface TranslationProvider {
   name: string;
   label: string;
@@ -11,6 +15,7 @@ export interface TranslationProvider {
     targetLang: string,
     token?: string | null,
     useCache?: boolean,
+    signal?: AbortSignal,
   ) => Promise<string[]>;
 }
 

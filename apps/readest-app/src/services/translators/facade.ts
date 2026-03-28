@@ -5,16 +5,16 @@ import {
   TranslationServiceError,
   type TranslatorSelection,
 } from './service';
-import { TranslationProvider, UseTranslatorOptions } from './types';
+import { TranslationProvider, TranslationRequestOptions, UseTranslatorOptions } from './types';
 
-export interface TranslationBatchCommand extends UseTranslatorOptions {
+export interface TranslationBatchCommand extends UseTranslatorOptions, TranslationRequestOptions {
   texts: string[];
   provider?: TranslatorName;
   token?: string | null;
   useCache?: boolean;
 }
 
-export interface TranslateSelectionCommand extends UseTranslatorOptions {
+export interface TranslateSelectionCommand extends UseTranslatorOptions, TranslationRequestOptions {
   text: string;
   provider?: TranslatorName;
   token?: string | null;
@@ -32,14 +32,15 @@ export interface VisibleTranslationBlockResult {
   translatedText: string;
 }
 
-export interface TranslateVisibleBlocksCommand extends UseTranslatorOptions {
+export interface TranslateVisibleBlocksCommand
+  extends UseTranslatorOptions, TranslationRequestOptions {
   blocks: VisibleTranslationBlock[];
   provider?: TranslatorName;
   token?: string | null;
   useCache?: boolean;
 }
 
-export interface TranslateChapterCommand extends UseTranslatorOptions {
+export interface TranslateChapterCommand extends UseTranslatorOptions, TranslationRequestOptions {
   paragraphs: string[];
   provider?: TranslatorName;
   token?: string | null;
@@ -113,6 +114,7 @@ export const createTranslationFacade = (
     enablePreprocessing = true,
     token,
     useCache = false,
+    signal,
   }: TranslationBatchCommand) => {
     return await dependencies.translateTexts({
       input: texts,
@@ -123,6 +125,7 @@ export const createTranslationFacade = (
       enablePreprocessing,
       token,
       useCache,
+      signal,
       translators: listProviders(),
     });
   };

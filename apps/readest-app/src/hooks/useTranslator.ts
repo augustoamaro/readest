@@ -60,7 +60,7 @@ export function useTranslator({
   const translate = useCallback(
     async (
       input: string[],
-      options?: { source?: string; target?: string; useCache?: boolean },
+      options?: { source?: string; target?: string; useCache?: boolean; signal?: AbortSignal },
     ): Promise<string[]> => {
       if (input.length === 0 || input.every((text) => !text?.trim())) {
         return input;
@@ -78,6 +78,7 @@ export function useTranslator({
           enablePreprocessing,
           token,
           useCache: options?.useCache ?? false,
+          signal: options?.signal,
         });
       } catch (err) {
         handleTranslationError(err);
@@ -93,7 +94,7 @@ export function useTranslator({
   const translateVisibleBlocks = useCallback(
     async (
       blocks: Array<{ id: string; text: string }>,
-      options?: { source?: string; target?: string; useCache?: boolean },
+      options?: { source?: string; target?: string; useCache?: boolean; signal?: AbortSignal },
     ) => {
       if (blocks.length === 0) return [];
 
@@ -109,6 +110,7 @@ export function useTranslator({
           enablePreprocessing,
           token,
           useCache: options?.useCache ?? false,
+          signal: options?.signal,
         });
       } catch (err) {
         handleTranslationError(err);

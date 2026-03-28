@@ -3,6 +3,7 @@ import {
   createInlineTranslationCoordinator,
   ErrorCodes,
   TranslationServiceError,
+  type InlineTranslationCoordinatorEvent,
   type VisibleTranslationBlock,
   type VisibleTranslationBlockResult,
 } from '@/services/translators';
@@ -21,6 +22,10 @@ const createDeferred = <T>() => {
 const flushPromises = async () => {
   await Promise.resolve();
   await Promise.resolve();
+};
+
+const getEventTypes = (onEvent: ReturnType<typeof vi.fn>) => {
+  return onEvent.mock.calls.map(([event]) => (event as InlineTranslationCoordinatorEvent).type);
 };
 
 describe('createInlineTranslationCoordinator', () => {
@@ -91,15 +96,26 @@ describe('createInlineTranslationCoordinator', () => {
   it('ignores obsolete results after cancellation and allows a new generation to proceed', async () => {
     const staleBatch = createDeferred<VisibleTranslationBlockResult[]>();
     const freshBatch = createDeferred<VisibleTranslationBlockResult[]>();
+    let staleSignal: AbortSignal | undefined;
+    const onEvent = vi.fn();
     const translateVisibleBlocks = vi
-      .fn()
-      .mockReturnValueOnce(staleBatch.promise)
-      .mockReturnValueOnce(freshBatch.promise);
+      .fn<
+        (
+          blocks: VisibleTranslationBlock[],
+          options?: { signal?: AbortSignal },
+        ) => Promise<VisibleTranslationBlockResult[]>
+      >()
+      .mockImplementationOnce((_blocks, options) => {
+        staleSignal = options?.signal;
+        return staleBatch.promise;
+      })
+      .mockImplementationOnce(() => freshBatch.promise);
     const onResults = vi.fn();
 
     const coordinator = createInlineTranslationCoordinator({
       translateVisibleBlocks,
       onResults,
+      onEvent,
       batchSize: 1,
       maxConcurrentBatches: 1,
       idleDebounceMs: 1,
@@ -109,6 +125,8 @@ describe('createInlineTranslationCoordinator', () => {
     coordinator.cancel();
     coordinator.enqueue([{ id: 'fresh', text: 'new' }]);
 
+    expect(staleSignal?.aborted).toBe(true);
+
     staleBatch.resolve([{ id: 'stale', originalText: 'old', translatedText: 'velho' }]);
     freshBatch.resolve([{ id: 'fresh', originalText: 'new', translatedText: 'novo' }]);
     await flushPromises();
@@ -117,6 +135,7 @@ describe('createInlineTranslationCoordinator', () => {
     expect(onResults).toHaveBeenCalledWith([
       { id: 'fresh', originalText: 'new', translatedText: 'novo' },
     ]);
+    expect(getEventTypes(onEvent)).toContain('staleResultIgnored');
 
     coordinator.dispose();
   });
@@ -125,10 +144,12 @@ describe('createInlineTranslationCoordinator', () => {
     const batch = createDeferred<VisibleTranslationBlockResult[]>();
     const translateVisibleBlocks = vi.fn().mockReturnValue(batch.promise);
     const onResults = vi.fn();
+    const onEvent = vi.fn();
 
     const coordinator = createInlineTranslationCoordinator({
       translateVisibleBlocks,
       onResults,
+      onEvent,
       batchSize: 2,
       maxConcurrentBatches: 1,
       idleDebounceMs: 1,
@@ -138,7 +159,10 @@ describe('createInlineTranslationCoordinator', () => {
     coordinator.enqueue([{ id: 'second', text: 'Hello world' }]);
 
     expect(translateVisibleBlocks).toHaveBeenCalledTimes(1);
-    expect(translateVisibleBlocks).toHaveBeenCalledWith([{ id: 'first', text: 'Hello   world' }]);
+    expect(translateVisibleBlocks).toHaveBeenCalledWith(
+      [{ id: 'first', text: 'Hello   world' }],
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
 
     batch.resolve([{ id: 'first', originalText: 'Hello   world', translatedText: 'Ola mundo' }]);
     await flushPromises();
@@ -154,6 +178,9 @@ describe('createInlineTranslationCoordinator', () => {
     expect(onResults).toHaveBeenLastCalledWith([
       { id: 'third', originalText: 'Hello world', translatedText: 'Ola mundo' },
     ]);
+    expect(getEventTypes(onEvent)).toEqual(
+      expect.arrayContaining(['batchEnqueued', 'batchStarted', 'batchSucceeded', 'dedupeHit']),
+    );
 
     coordinator.dispose();
   });
@@ -169,11 +196,13 @@ describe('createInlineTranslationCoordinator', () => {
       .mockReturnValueOnce(secondBatch.promise);
     const onResults = vi.fn();
     const onError = vi.fn();
+    const onEvent = vi.fn();
 
     const coordinator = createInlineTranslationCoordinator({
       translateVisibleBlocks,
       onResults,
       onError,
+      onEvent,
       batchSize: 1,
       maxConcurrentBatches: 1,
       idleDebounceMs: 1,
@@ -198,6 +227,9 @@ describe('createInlineTranslationCoordinator', () => {
       { id: 'retry', originalText: 'text', translatedText: 'texto' },
     ]);
     expect(onError).not.toHaveBeenCalled();
+    expect(getEventTypes(onEvent)).toEqual(
+      expect.arrayContaining(['batchStarted', 'batchRetried', 'batchSucceeded']),
+    );
 
     coordinator.dispose();
   });
@@ -206,11 +238,13 @@ describe('createInlineTranslationCoordinator', () => {
     const batch = createDeferred<VisibleTranslationBlockResult[]>();
     const translateVisibleBlocks = vi.fn().mockReturnValue(batch.promise);
     const onError = vi.fn();
+    const onEvent = vi.fn();
 
     const coordinator = createInlineTranslationCoordinator({
       translateVisibleBlocks,
       onResults: vi.fn(),
       onError,
+      onEvent,
       batchSize: 1,
       maxConcurrentBatches: 1,
       idleDebounceMs: 1,
@@ -230,6 +264,7 @@ describe('createInlineTranslationCoordinator', () => {
     expect(onError).toHaveBeenCalledWith(expect.any(TranslationServiceError), [
       { id: 'quota', text: 'text' },
     ]);
+    expect(getEventTypes(onEvent)).toContain('batchFailed');
 
     coordinator.dispose();
   });
@@ -239,11 +274,13 @@ describe('createInlineTranslationCoordinator', () => {
 
     const batch = createDeferred<VisibleTranslationBlockResult[]>();
     const onIdle = vi.fn();
+    const onEvent = vi.fn();
 
     const coordinator = createInlineTranslationCoordinator({
       translateVisibleBlocks: vi.fn().mockReturnValue(batch.promise),
       onResults: vi.fn(),
       onIdle,
+      onEvent,
       batchSize: 1,
       maxConcurrentBatches: 1,
       idleDebounceMs: 20,
@@ -258,6 +295,8 @@ describe('createInlineTranslationCoordinator', () => {
     await vi.advanceTimersByTimeAsync(20);
 
     expect(onIdle).toHaveBeenCalledTimes(1);
+    expect(getEventTypes(onEvent)).toContain('idleReached');
+    expect(coordinator.getSnapshot().metrics.idleReached).toBe(1);
 
     coordinator.dispose();
   });

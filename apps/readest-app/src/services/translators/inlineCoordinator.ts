@@ -1,5 +1,5 @@
-import { TranslationServiceError } from './service';
-import { ErrorCodes } from './types';
+import { TranslationServiceError, isTranslationAbortError } from './service';
+import { ErrorCodes, type TranslationRequestOptions } from './types';
 import { VisibleTranslationBlock, VisibleTranslationBlockResult } from './facade';
 
 export const DEFAULT_INLINE_TRANSLATION_BATCH_SIZE = 3;
@@ -26,7 +26,6 @@ const TRANSIENT_ERROR_PATTERNS = [
   'enetunreach',
   'enotfound',
   'etimedout',
-  'abort',
 ];
 
 const NON_RETRYABLE_ERROR_PATTERNS = [
@@ -44,13 +43,99 @@ interface InlineTranslationTask {
   attempt: number;
 }
 
+export interface InlineTranslationCoordinatorMetrics {
+  batchesEnqueued: number;
+  batchesStarted: number;
+  batchesSucceeded: number;
+  batchesRetried: number;
+  batchesFailed: number;
+  dedupeHits: number;
+  staleResultsIgnored: number;
+  idleReached: number;
+}
+
+export interface InlineTranslationCoordinatorSnapshot {
+  generation: number;
+  queueSize: number;
+  activeBatches: number;
+  retryTimerCount: number;
+  inFlightBatchCount: number;
+  metrics: InlineTranslationCoordinatorMetrics;
+}
+
+export type InlineTranslationCoordinatorEvent =
+  | {
+      type: 'batchEnqueued';
+      generation: number;
+      taskCount: number;
+      blockCount: number;
+      queueSize: number;
+    }
+  | {
+      type: 'batchStarted';
+      generation: number;
+      batchId: number;
+      attempt: number;
+      taskCount: number;
+      blockCount: number;
+    }
+  | {
+      type: 'batchSucceeded';
+      generation: number;
+      batchId: number;
+      attempt: number;
+      taskCount: number;
+      blockCount: number;
+      resultCount: number;
+    }
+  | {
+      type: 'batchRetried';
+      generation: number;
+      batchId: number;
+      nextAttempt: number;
+      taskCount: number;
+      blockCount: number;
+      reason: string;
+    }
+  | {
+      type: 'batchFailed';
+      generation: number;
+      batchId: number;
+      attempt: number;
+      taskCount: number;
+      blockCount: number;
+      reason: string;
+    }
+  | {
+      type: 'dedupeHit';
+      generation: number;
+      blockId: string;
+      normalizedText: string;
+      source: 'queued' | 'completed';
+    }
+  | {
+      type: 'staleResultIgnored';
+      generation: number;
+      batchId: number;
+      phase: 'success' | 'error';
+    }
+  | {
+      type: 'idleReached';
+      generation: number;
+    };
+
 export interface InlineTranslationCoordinatorOptions {
   translateVisibleBlocks: (
     blocks: VisibleTranslationBlock[],
+    options?: TranslationRequestOptions,
   ) => Promise<VisibleTranslationBlockResult[]>;
   onResults: (results: VisibleTranslationBlockResult[]) => void;
   onError?: (error: unknown, blocks: VisibleTranslationBlock[]) => void;
   onIdle?: () => void;
+  onEvent?: (
+    event: InlineTranslationCoordinatorEvent,
+    snapshot: InlineTranslationCoordinatorSnapshot,
+  ) => void;
   batchSize?: number;
   maxConcurrentBatches?: number;
   idleDebounceMs?: number;
@@ -62,13 +147,37 @@ export interface InlineTranslationCoordinator {
   enqueue: (blocks: VisibleTranslationBlock[]) => void;
   cancel: () => void;
   dispose: () => void;
+  getSnapshot: () => InlineTranslationCoordinatorSnapshot;
 }
 
 export const normalizeInlineTranslationText = (text: string) => {
   return text.replace(/\s+/g, ' ').trim();
 };
 
+const createEmptyMetrics = (): InlineTranslationCoordinatorMetrics => ({
+  batchesEnqueued: 0,
+  batchesStarted: 0,
+  batchesSucceeded: 0,
+  batchesRetried: 0,
+  batchesFailed: 0,
+  dedupeHits: 0,
+  staleResultsIgnored: 0,
+  idleReached: 0,
+});
+
+const getInlineTranslationErrorReason = (error: unknown) => {
+  if (error instanceof Error) {
+    return error.message || error.name;
+  }
+
+  return String(error);
+};
+
 export const isRetryableInlineTranslationError = (error: unknown) => {
+  if (isTranslationAbortError(error)) {
+    return false;
+  }
+
   if (error instanceof TranslationServiceError) {
     if (error.code === ErrorCodes.DAILY_QUOTA_EXCEEDED || error.code === ErrorCodes.UNAUTHORIZED) {
       return false;
@@ -94,6 +203,7 @@ export const createInlineTranslationCoordinator = ({
   onResults,
   onError,
   onIdle,
+  onEvent,
   batchSize = DEFAULT_INLINE_TRANSLATION_BATCH_SIZE,
   maxConcurrentBatches = DEFAULT_INLINE_TRANSLATION_CONCURRENCY,
   idleDebounceMs = DEFAULT_INLINE_TRANSLATION_IDLE_DEBOUNCE_MS,
@@ -104,11 +214,27 @@ export const createInlineTranslationCoordinator = ({
   let activeBatches = 0;
   let queue: InlineTranslationTask[] = [];
   let idleTimer: ReturnType<typeof setTimeout> | null = null;
+  let nextBatchId = 0;
 
   const retryTimers = new Set<ReturnType<typeof setTimeout>>();
+  const inFlightControllers = new Map<number, AbortController>();
   const scheduledIds = new Map<string, number>();
   const tasksByText = new Map<string, InlineTranslationTask>();
   const completedTranslations = new Map<string, string>();
+  const metrics = createEmptyMetrics();
+
+  const getSnapshot = (): InlineTranslationCoordinatorSnapshot => ({
+    generation,
+    queueSize: queue.length,
+    activeBatches,
+    retryTimerCount: retryTimers.size,
+    inFlightBatchCount: inFlightControllers.size,
+    metrics: { ...metrics },
+  });
+
+  const emitEvent = (event: InlineTranslationCoordinatorEvent) => {
+    onEvent?.(event, getSnapshot());
+  };
 
   const clearIdleTimer = () => {
     if (idleTimer) {
@@ -122,6 +248,11 @@ export const createInlineTranslationCoordinator = ({
     retryTimers.clear();
   };
 
+  const abortInFlightControllers = () => {
+    inFlightControllers.forEach((controller) => controller.abort());
+    inFlightControllers.clear();
+  };
+
   const scheduleIdle = () => {
     if (!onIdle || queue.length > 0 || activeBatches > 0 || retryTimers.size > 0) return;
 
@@ -129,6 +260,11 @@ export const createInlineTranslationCoordinator = ({
     idleTimer = setTimeout(() => {
       idleTimer = null;
       if (queue.length === 0 && activeBatches === 0 && retryTimers.size === 0) {
+        metrics.idleReached++;
+        emitEvent({
+          type: 'idleReached',
+          generation,
+        });
         onIdle();
       }
     }, idleDebounceMs);
@@ -162,7 +298,29 @@ export const createInlineTranslationCoordinator = ({
     });
   };
 
-  const scheduleRetry = (tasks: InlineTranslationTask[], batchGeneration: number) => {
+  const flattenTaskBlocks = (tasks: InlineTranslationTask[]) => {
+    return tasks.flatMap((task) => Array.from(task.blocks.values()));
+  };
+
+  const scheduleRetry = (
+    tasks: InlineTranslationTask[],
+    batchGeneration: number,
+    batchId: number,
+    reason: string,
+  ) => {
+    const nextAttempt = Math.max(...tasks.map((task) => task.attempt)) + 1;
+
+    metrics.batchesRetried++;
+    emitEvent({
+      type: 'batchRetried',
+      generation: batchGeneration,
+      batchId,
+      nextAttempt,
+      taskCount: tasks.length,
+      blockCount: flattenTaskBlocks(tasks).length,
+      reason,
+    });
+
     const timer = setTimeout(() => {
       retryTimers.delete(timer);
 
@@ -178,14 +336,11 @@ export const createInlineTranslationCoordinator = ({
     retryTimers.add(timer);
   };
 
-  const flattenTaskBlocks = (tasks: InlineTranslationTask[]) => {
-    return tasks.flatMap((task) => Array.from(task.blocks.values()));
-  };
-
   const handleBatchFailure = (
     error: unknown,
     tasks: InlineTranslationTask[],
     batchGeneration: number,
+    batchId: number,
   ) => {
     const retryableError = isRetryableInlineTranslationError(error);
     const retryableTasks =
@@ -194,9 +349,21 @@ export const createInlineTranslationCoordinator = ({
       retryableTasks.length === tasks.length
         ? []
         : tasks.filter((task) => !retryableTasks.includes(task));
+    const reason = getInlineTranslationErrorReason(error);
+    const currentAttempt = Math.max(...tasks.map((task) => task.attempt)) + 1;
 
     if (failedTasks.length > 0) {
       releaseFailedTasks(failedTasks);
+      metrics.batchesFailed++;
+      emitEvent({
+        type: 'batchFailed',
+        generation: batchGeneration,
+        batchId,
+        attempt: currentAttempt,
+        taskCount: failedTasks.length,
+        blockCount: flattenTaskBlocks(failedTasks).length,
+        reason,
+      });
       onError?.(error, flattenTaskBlocks(failedTasks));
     }
 
@@ -204,12 +371,22 @@ export const createInlineTranslationCoordinator = ({
       retryableTasks.forEach((task) => {
         task.attempt += 1;
       });
-      scheduleRetry(retryableTasks, batchGeneration);
+      scheduleRetry(retryableTasks, batchGeneration, batchId, reason);
       return;
     }
 
     if (failedTasks.length === 0) {
       releaseFailedTasks(tasks);
+      metrics.batchesFailed++;
+      emitEvent({
+        type: 'batchFailed',
+        generation: batchGeneration,
+        batchId,
+        attempt: currentAttempt,
+        taskCount: tasks.length,
+        blockCount: flattenTaskBlocks(tasks).length,
+        reason,
+      });
       onError?.(error, flattenTaskBlocks(tasks));
     }
   };
@@ -218,28 +395,77 @@ export const createInlineTranslationCoordinator = ({
     while (activeBatches < maxConcurrentBatches && queue.length > 0) {
       const tasks = queue.splice(0, batchSize);
       const batchGeneration = generation;
+      const batchId = nextBatchId++;
+      const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
       const batch = tasks.map((task) => ({
         id: task.requestId,
         text: task.text,
       }));
+      const currentAttempt = Math.max(...tasks.map((task) => task.attempt)) + 1;
 
       activeBatches++;
 
-      translateVisibleBlocks(batch)
+      if (controller) {
+        inFlightControllers.set(batchId, controller);
+      }
+
+      metrics.batchesStarted++;
+      emitEvent({
+        type: 'batchStarted',
+        generation: batchGeneration,
+        batchId,
+        attempt: currentAttempt,
+        taskCount: tasks.length,
+        blockCount: batch.length,
+      });
+
+      translateVisibleBlocks(batch, {
+        signal: controller?.signal,
+      })
         .then((results) => {
-          if (batchGeneration !== generation) return;
+          if (batchGeneration !== generation) {
+            metrics.staleResultsIgnored++;
+            emitEvent({
+              type: 'staleResultIgnored',
+              generation: batchGeneration,
+              batchId,
+              phase: 'success',
+            });
+            return;
+          }
 
           const resultsByRequestId = new Map(results.map((result) => [result.id, result]));
           const expandedResults = expandTaskResults(tasks, resultsByRequestId);
+          metrics.batchesSucceeded++;
+          emitEvent({
+            type: 'batchSucceeded',
+            generation: batchGeneration,
+            batchId,
+            attempt: currentAttempt,
+            taskCount: tasks.length,
+            blockCount: batch.length,
+            resultCount: expandedResults.length,
+          });
           if (expandedResults.length > 0) {
             onResults(expandedResults);
           }
         })
         .catch((error) => {
-          if (batchGeneration !== generation) return;
-          handleBatchFailure(error, tasks, batchGeneration);
+          if (batchGeneration !== generation) {
+            metrics.staleResultsIgnored++;
+            emitEvent({
+              type: 'staleResultIgnored',
+              generation: batchGeneration,
+              batchId,
+              phase: 'error',
+            });
+            return;
+          }
+          handleBatchFailure(error, tasks, batchGeneration, batchId);
         })
         .finally(() => {
+          inFlightControllers.delete(batchId);
+
           if (batchGeneration !== generation) return;
 
           activeBatches--;
@@ -255,6 +481,8 @@ export const createInlineTranslationCoordinator = ({
     clearIdleTimer();
 
     const immediateResults: VisibleTranslationBlockResult[] = [];
+    let enqueuedTaskCount = 0;
+    let enqueuedBlockCount = 0;
 
     blocks.forEach((block) => {
       const text = block.text.trim();
@@ -268,6 +496,14 @@ export const createInlineTranslationCoordinator = ({
       scheduledIds.set(normalizedBlock.id, generation);
 
       if (completedTranslations.has(normalizedText)) {
+        metrics.dedupeHits++;
+        emitEvent({
+          type: 'dedupeHit',
+          generation,
+          blockId: normalizedBlock.id,
+          normalizedText,
+          source: 'completed',
+        });
         immediateResults.push({
           id: normalizedBlock.id,
           originalText: normalizedBlock.text,
@@ -278,6 +514,14 @@ export const createInlineTranslationCoordinator = ({
 
       const existingTask = tasksByText.get(normalizedText);
       if (existingTask) {
+        metrics.dedupeHits++;
+        emitEvent({
+          type: 'dedupeHit',
+          generation,
+          blockId: normalizedBlock.id,
+          normalizedText,
+          source: 'queued',
+        });
         existingTask.blocks.set(normalizedBlock.id, normalizedBlock);
         return;
       }
@@ -292,7 +536,20 @@ export const createInlineTranslationCoordinator = ({
 
       tasksByText.set(normalizedText, task);
       queue.push(task);
+      enqueuedTaskCount++;
+      enqueuedBlockCount += task.blocks.size;
     });
+
+    if (enqueuedTaskCount > 0) {
+      metrics.batchesEnqueued++;
+      emitEvent({
+        type: 'batchEnqueued',
+        generation,
+        taskCount: enqueuedTaskCount,
+        blockCount: enqueuedBlockCount,
+        queueSize: queue.length,
+      });
+    }
 
     if (immediateResults.length > 0) {
       onResults(immediateResults);
@@ -310,6 +567,7 @@ export const createInlineTranslationCoordinator = ({
     completedTranslations.clear();
     clearIdleTimer();
     clearRetryTimers();
+    abortInFlightControllers();
   };
 
   const dispose = () => {
@@ -320,5 +578,6 @@ export const createInlineTranslationCoordinator = ({
     enqueue,
     cancel,
     dispose,
+    getSnapshot,
   };
 };

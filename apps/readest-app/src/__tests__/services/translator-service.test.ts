@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  createTranslationAbortError,
   ErrorCodes,
+  isTranslationAbortError,
   resolveTranslatorSelection,
+  throwIfTranslationAborted,
   translateTexts,
   TranslationServiceError,
   type TranslationProvider,
@@ -62,7 +65,14 @@ describe('translateTexts', () => {
     );
 
     expect(preprocess).toHaveBeenCalledWith(['cached', 'needs']);
-    expect(translator.translate).toHaveBeenCalledWith(['pre:needs'], 'AUTO', 'PT', 'token', true);
+    expect(translator.translate).toHaveBeenCalledWith(
+      ['pre:needs'],
+      'AUTO',
+      'PT',
+      'token',
+      true,
+      undefined,
+    );
     expect(storeInCache).toHaveBeenCalledWith(
       'pre:needs',
       'translated:pre:needs',
@@ -125,5 +135,80 @@ describe('translateTexts', () => {
       code: ErrorCodes.DAILY_QUOTA_EXCEEDED,
       fallbackProvider: 'azure',
     } satisfies Partial<TranslationServiceError>);
+  });
+
+  it('passes AbortSignal through to the provider call', async () => {
+    const signal = new AbortController().signal;
+    const translator = createTranslator('azure', {
+      translate: vi.fn(async (texts: string[]) => texts.map((text) => `translated:${text}`)),
+    });
+
+    await translateTexts(
+      {
+        input: ['text'],
+        provider: 'azure',
+        sourceLang: 'AUTO',
+        targetLang: 'PT',
+        signal,
+        translators: [translator],
+      },
+      {
+        getFromCache: vi.fn(async () => null),
+        storeInCache: vi.fn(async () => undefined),
+        preprocess: vi.fn((texts: string[]) => texts),
+        polish: vi.fn((texts: string[]) => texts),
+      },
+    );
+
+    expect(translator.translate).toHaveBeenCalledWith(
+      ['text'],
+      'AUTO',
+      'PT',
+      undefined,
+      false,
+      signal,
+    );
+  });
+
+  it('throws a stable abort error before doing work when the signal is already aborted', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const translator = createTranslator('azure');
+
+    await expect(
+      translateTexts(
+        {
+          input: ['text'],
+          provider: 'azure',
+          sourceLang: 'AUTO',
+          targetLang: 'PT',
+          signal: controller.signal,
+          translators: [translator],
+        },
+        {
+          getFromCache: vi.fn(async () => null),
+          storeInCache: vi.fn(async () => undefined),
+          preprocess: vi.fn((texts: string[]) => texts),
+          polish: vi.fn((texts: string[]) => texts),
+        },
+      ),
+    ).rejects.toMatchObject({ name: 'AbortError' });
+
+    expect(translator.translate).not.toHaveBeenCalled();
+  });
+});
+
+describe('translation abort helpers', () => {
+  it('creates and detects a stable abort error', () => {
+    const abortError = createTranslationAbortError();
+
+    expect(isTranslationAbortError(abortError)).toBe(true);
+  });
+
+  it('throws when asked to abort an already-aborted request', () => {
+    const controller = new AbortController();
+    controller.abort();
+
+    expect(() => throwIfTranslationAborted(controller.signal)).toThrowError(/aborted/i);
   });
 });
