@@ -10,7 +10,7 @@ import {
   saveTranslationPreference,
 } from '@/helpers/translationSettings';
 import { TRANSLATOR_LANGS } from '@/services/constants';
-import { UseTranslatorOptions, getTranslators } from '@/services/translators';
+import { translationFacade, TranslatorName, UseTranslatorOptions } from '@/services/translators';
 import { useReaderStore } from '@/store/readerStore';
 import Select from '@/components/Select';
 
@@ -80,19 +80,17 @@ const TranslatorPopup: React.FC<TranslatorPopupProps> = ({
   };
 
   const handleProviderChange = (event: React.ChangeEvent<HTMLSelectElement>) => {
-    const requestedProvider = event.target.value;
-    const availableTranslators = getTranslators().filter(
-      (t) => (t.authRequired ? !!token : true) && !t.quotaExceeded,
-    );
-    const selectedTranslator =
-      availableTranslators.find((t) => t.name === requestedProvider) || availableTranslators[0]!;
-    if (selectedTranslator) {
-      setProvider(selectedTranslator.name);
+    const selection = translationFacade.resolveProviderSelection({
+      provider: event.target.value as TranslatorName,
+      token,
+    });
+    if (selection.translator) {
+      setProvider(selection.selectedProvider);
       void saveTranslationPreference(
         envConfig,
         bookKey,
         'translationProvider',
-        selectedTranslator.name,
+        selection.selectedProvider,
       );
     }
   };

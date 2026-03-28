@@ -2,13 +2,9 @@ import { useState, useCallback, useEffect } from 'react';
 import { useAuth } from '@/context/AuthContext';
 import {
   ErrorCodes,
-  getTranslator,
-  getTranslators,
-  resolveTranslatorSelection,
-  translateTexts,
   TranslationServiceError,
-  TranslatorName,
   UseTranslatorOptions,
+  translationFacade,
 } from '@/services/translators';
 import { eventDispatcher } from '@/utils/event';
 import { getLocale } from '@/utils/misc';
@@ -25,18 +21,17 @@ export function useTranslator({
   const { token } = useAuth();
   const [loading, setLoading] = useState(false);
   const [selectedProvider, setSelectedProvider] = useState(provider);
-  const [translator, setTransltor] = useState(() => getTranslator(provider));
-  const [translators] = useState(() => getTranslators());
+  const [translator, setTransltor] = useState(() => translationFacade.getProvider(provider));
+  const [translators] = useState(() => translationFacade.listProviders());
 
   useEffect(() => {
     setLoading(false);
   }, [provider, sourceLang, targetLang]);
 
   useEffect(() => {
-    const selection = resolveTranslatorSelection({
+    const selection = translationFacade.resolveProviderSelection({
       provider,
       token,
-      translators,
     });
     setTransltor(selection.translator);
     setSelectedProvider(selection.selectedProvider);
@@ -55,8 +50,8 @@ export function useTranslator({
       setLoading(true);
 
       try {
-        return await translateTexts({
-          input,
+        return await translationFacade.translateBatch({
+          texts: input,
           provider: selectedProvider,
           sourceLang: options?.source || sourceLang,
           targetLang: options?.target || targetLang || getLocale(),
@@ -64,7 +59,6 @@ export function useTranslator({
           enablePreprocessing,
           token,
           useCache: options?.useCache ?? false,
-          translators,
         });
       } catch (err) {
         if (
@@ -80,7 +74,7 @@ export function useTranslator({
           });
           if (err.fallbackProvider) {
             setSelectedProvider(err.fallbackProvider);
-            setTransltor(getTranslator(err.fallbackProvider as TranslatorName));
+            setTransltor(translationFacade.getProvider(err.fallbackProvider));
           }
         }
         throw err instanceof Error ? err : new Error(String(err));
