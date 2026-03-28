@@ -60,11 +60,17 @@ export const createTranslationAbortError = () => {
 };
 
 export const isTranslationAbortError = (error: unknown) => {
+  const message =
+    error instanceof Error || (typeof DOMException !== 'undefined' && error instanceof DOMException)
+      ? error.message
+      : String(error);
+
   return (
     (typeof DOMException !== 'undefined' &&
       error instanceof DOMException &&
       error.name === 'AbortError') ||
-    (error instanceof Error && error.name === 'AbortError')
+    (error instanceof Error && error.name === 'AbortError') ||
+    /request cancelled|request canceled|translation request aborted/i.test(message)
   );
 };
 

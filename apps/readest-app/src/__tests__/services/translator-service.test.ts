@@ -203,6 +203,7 @@ describe('translation abort helpers', () => {
     const abortError = createTranslationAbortError();
 
     expect(isTranslationAbortError(abortError)).toBe(true);
+    expect(isTranslationAbortError(new Error('Request cancelled'))).toBe(true);
   });
 
   it('throws when asked to abort an already-aborted request', () => {

@@ -11,7 +11,7 @@ interface TokenCache {
 
 let tokenCache: TokenCache | null = null;
 
-const getAuthToken = async (): Promise<string> => {
+const getAuthToken = async (signal?: AbortSignal): Promise<string> => {
   const now = Date.now();
 
   if (tokenCache && tokenCache.expiresAt > now) {
@@ -25,6 +25,7 @@ const getAuthToken = async (): Promise<string> => {
       headers: {
         'User-Agent': 'Mozilla/5.0',
       },
+      signal,
     });
 
     if (!tokenResponse.ok) {
@@ -49,7 +50,14 @@ const getAuthToken = async (): Promise<string> => {
 export const azureProvider: TranslationProvider = {
   name: 'azure',
   label: _('Azure Translator'),
-  translate: async (text: string[], sourceLang: string, targetLang: string): Promise<string[]> => {
+  translate: async (
+    text: string[],
+    sourceLang: string,
+    targetLang: string,
+    _token?: string | null,
+    _useCache?: boolean,
+    signal?: AbortSignal,
+  ): Promise<string[]> => {
     if (!text.length) return [];
 
     const results: string[] = [];
@@ -71,7 +79,7 @@ export const azureProvider: TranslationProvider = {
         params.append('from', msSourceLang);
       }
 
-      const token = await getAuthToken();
+      const token = await getAuthToken(signal);
       const fetch = isTauriAppPlatform() ? tauriFetch : window.fetch;
       const response = await fetch(`${url}?${params.toString()}`, {
         method: 'POST',
@@ -80,6 +88,7 @@ export const azureProvider: TranslationProvider = {
           Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify([{ Text: line }]),
+        signal,
       });
 
       if (!response.ok) {

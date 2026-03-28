@@ -19,6 +19,7 @@ export const deeplProvider: TranslationProvider = {
     targetLang: string,
     token?: string | null,
     useCache: boolean = false,
+    signal?: AbortSignal,
   ): Promise<string[]> => {
     const authRequired = deeplProvider.authRequired;
 
@@ -46,7 +47,12 @@ export const deeplProvider: TranslationProvider = {
 
     const quota = getTranslationQuota(userPlan);
     try {
-      const response = await fetch(DEEPL_API_ENDPOINT, { method: 'POST', headers, body });
+      const response = await fetch(DEEPL_API_ENDPOINT, {
+        method: 'POST',
+        headers,
+        body,
+        signal,
+      });
 
       if (!response.ok) {
         const data = await response.json();

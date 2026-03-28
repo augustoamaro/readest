@@ -7,7 +7,14 @@ import { TranslationProvider } from '../types';
 export const googleProvider: TranslationProvider = {
   name: 'google',
   label: _('Google Translate'),
-  translate: async (text: string[], sourceLang: string, targetLang: string): Promise<string[]> => {
+  translate: async (
+    text: string[],
+    sourceLang: string,
+    targetLang: string,
+    _token?: string | null,
+    _useCache?: boolean,
+    signal?: AbortSignal,
+  ): Promise<string[]> => {
     if (!text.length) return [];
 
     const results: string[] = [];
@@ -26,7 +33,9 @@ export const googleProvider: TranslationProvider = {
       url.searchParams.append('q', line);
 
       const fetch = isTauriAppPlatform() ? tauriFetch : window.fetch;
-      const response = await fetch(url.toString());
+      const response = await fetch(url.toString(), {
+        signal,
+      });
 
       if (!response.ok) {
         throw new Error(`Translation failed with status ${response.status}`);

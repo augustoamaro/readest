@@ -11,6 +11,7 @@ async function translateSingleTextForService(
   text: string,
   lang: string,
   service: string,
+  signal?: AbortSignal,
 ): Promise<string[]> {
   const fetchImpl = isTauriAppPlatform() ? tauriFetch : window.fetch;
   const url = 'https://translate.toil.cc/v2/translate/';
@@ -25,6 +26,7 @@ async function translateSingleTextForService(
       service: service,
       text: text,
     }),
+    signal,
   };
 
   const response = await fetchImpl(url, request);
@@ -49,7 +51,14 @@ export const yandexProvider: TranslationProvider = {
   name: 'yandex',
   label: _('Yandex Translate'),
   authRequired: false,
-  translate: async (texts: string[], sourceLang: string, targetLang: string): Promise<string[]> => {
+  translate: async (
+    texts: string[],
+    sourceLang: string,
+    targetLang: string,
+    _token?: string | null,
+    _useCache?: boolean,
+    signal?: AbortSignal,
+  ): Promise<string[]> => {
     if (!texts.length) return [];
 
     /**
@@ -69,7 +78,7 @@ export const yandexProvider: TranslationProvider = {
 
     const responses = await Promise.all(
       texts.map(async (text) => {
-        return await translateSingleTextForService(text, lang, service);
+        return await translateSingleTextForService(text, lang, service, signal);
       }),
     );
 
