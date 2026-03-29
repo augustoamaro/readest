@@ -23,6 +23,11 @@ interface CloudflareEnv {
   TRANSLATIONS_KV?: KVNamespace;
 }
 
+interface DeepLProxyAbortBinding {
+  signal: AbortSignal;
+  dispose: () => void;
+}
+
 const LANG_V2_V1_MAP: Record<string, string> = {
   'ZH-HANS': 'ZH',
   'ZH-HANT': 'ZH-TW',
@@ -37,6 +42,80 @@ const generateCacheKey = (text: string, sourceLang: string, targetLang: string):
   const inputString = `${sourceLang}:${targetLang}:${text}`;
   const hash = crypto.createHash('sha1').update(inputString).digest('hex');
   return `tr:${hash}`;
+};
+
+export const createDeepLProxyAbortError = () => {
+  if (typeof DOMException !== 'undefined') {
+    return new DOMException('DeepL proxy request aborted', 'AbortError');
+  }
+
+  const error = new Error('DeepL proxy request aborted');
+  error.name = 'AbortError';
+  return error;
+};
+
+export const isDeepLProxyAbortError = (error: unknown) => {
+  const message =
+    error instanceof Error || (typeof DOMException !== 'undefined' && error instanceof DOMException)
+      ? error.message
+      : String(error);
+
+  return (
+    (typeof DOMException !== 'undefined' &&
+      error instanceof DOMException &&
+      error.name === 'AbortError') ||
+    (error instanceof Error && error.name === 'AbortError') ||
+    /request cancelled|request canceled|deepl proxy request aborted|operation was aborted/i.test(
+      message,
+    )
+  );
+};
+
+export const throwIfDeepLProxyAborted = (signal?: AbortSignal) => {
+  if (signal?.aborted) {
+    const reason = signal.reason;
+    if (
+      reason instanceof Error ||
+      (typeof DOMException !== 'undefined' && reason instanceof DOMException)
+    ) {
+      throw reason;
+    }
+    throw createDeepLProxyAbortError();
+  }
+};
+
+export const createDeepLProxyAbortBinding = (
+  req: NextApiRequest,
+  res: NextApiResponse,
+): DeepLProxyAbortBinding => {
+  const controller = new AbortController();
+
+  const abort = () => {
+    if (!controller.signal.aborted) {
+      controller.abort(createDeepLProxyAbortError());
+    }
+  };
+
+  const handleRequestAborted = () => {
+    abort();
+  };
+
+  const handleResponseClose = () => {
+    if (!res.writableEnded) {
+      abort();
+    }
+  };
+
+  req.once('aborted', handleRequestAborted);
+  res.once('close', handleResponseClose);
+
+  return {
+    signal: controller.signal,
+    dispose: () => {
+      req.off('aborted', handleRequestAborted);
+      res.off('close', handleResponseClose);
+    },
+  };
 };
 
 const checkDailyUsage = async (userId: string, token: string, chars: number) => {
@@ -113,10 +192,13 @@ const handler = async (req: NextApiRequest, res: NextApiResponse) => {
     target_lang: targetLang = 'EN',
     use_cache: useCache = false,
   }: { text: string[]; source_lang: string; target_lang: string; use_cache: boolean } = req.body;
+  const abortBinding = createDeepLProxyAbortBinding(req, res);
 
   try {
     const translations = await Promise.all(
       text.map(async (singleText) => {
+        throwIfDeepLProxyAborted(abortBinding.signal);
+
         if (!singleText?.trim()) {
           return { text: '', daily_usage: 0 };
         }
@@ -137,8 +219,11 @@ const handler = async (req: NextApiRequest, res: NextApiResponse) => {
           }
         }
 
+        throwIfDeepLProxyAborted(abortBinding.signal);
+
         if (!user || !token) return res.status(401).json({ error: ErrorCodes.UNAUTHORIZED });
         await checkDailyUsage(user?.id, token, singleText.length);
+        throwIfDeepLProxyAborted(abortBinding.signal);
 
         return await callDeepLAPI(
           singleText,
@@ -148,9 +233,13 @@ const handler = async (req: NextApiRequest, res: NextApiResponse) => {
           deeplAuthKey,
           env['TRANSLATIONS_KV'],
           useCache,
+          abortBinding.signal,
         );
       }),
     );
+
+    throwIfDeepLProxyAborted(abortBinding.signal);
+
     const originalCharsCount = text.reduce((a, b) => a + b.length, 0);
     const translatedCharsCount = translations.reduce((a, b) => a + (b?.text.length || 0), 0);
     const newDailyUsage = await updateDailyUsage(
@@ -158,23 +247,36 @@ const handler = async (req: NextApiRequest, res: NextApiResponse) => {
       token,
       originalCharsCount + translatedCharsCount,
     );
+    throwIfDeepLProxyAborted(abortBinding.signal);
+
     translations.forEach((translation) => {
       if (translation && translation.text) {
         translation.daily_usage = newDailyUsage;
       }
     });
+
+    if (abortBinding.signal.aborted || res.writableEnded) {
+      return;
+    }
+
     return res.status(200).json({ translations });
   } catch (error) {
+    if (isDeepLProxyAbortError(error) || abortBinding.signal.aborted) {
+      return;
+    }
+
     if (error instanceof Error && error.message.includes(ErrorCodes.DAILY_QUOTA_EXCEEDED)) {
       return res.status(429).json({ error: ErrorCodes.DAILY_QUOTA_EXCEEDED });
     } else {
       console.error('Error proxying DeepL request:', error);
     }
     return res.status(500).json({ error: ErrorCodes.INTERNAL_SERVER_ERROR });
+  } finally {
+    abortBinding.dispose();
   }
 };
 
-async function callDeepLAPI(
+export async function callDeepLAPI(
   text: string,
   sourceLang: string,
   targetLang: string,
@@ -182,8 +284,10 @@ async function callDeepLAPI(
   authKey: string,
   translationsKV: KVNamespace | undefined,
   useCache: boolean,
+  signal?: AbortSignal,
 ) {
   const isV2Api = apiUrl.endsWith('/v2/translate');
+  throwIfDeepLProxyAborted(signal);
 
   // TODO: this should be processed in the client, but for now, we need to do it here
   // please remove this when most clients are updated
@@ -211,6 +315,7 @@ async function callDeepLAPI(
       'Content-Type': 'application/json',
     },
     body: JSON.stringify(requestBody),
+    signal,
   });
 
   if (!response.ok) {
@@ -222,6 +327,7 @@ async function callDeepLAPI(
     translations?: { text: string; detected_source_language?: string }[];
     data?: string;
   };
+  throwIfDeepLProxyAborted(signal);
 
   let translatedText = '';
   let detectedSourceLanguage = '';
@@ -234,6 +340,7 @@ async function callDeepLAPI(
   }
 
   if (useCache && translationsKV && translatedText) {
+    throwIfDeepLProxyAborted(signal);
     try {
       const cacheKey = generateCacheKey(text, sourceLang, targetLang);
       await translationsKV.put(cacheKey, translatedText, { expirationTtl: 86400 * 90 });
