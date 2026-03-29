@@ -77,6 +77,22 @@ declare global {
   }
 }
 
+const isViewerAssetDebugEnabled = () => {
+  if (process.env['NEXT_PUBLIC_VIEWER_ASSET_DEBUG'] === 'true') {
+    return true;
+  }
+
+  if (typeof window === 'undefined') {
+    return false;
+  }
+
+  try {
+    return window.localStorage?.getItem('readest.viewerAssetDebug') === 'true';
+  } catch {
+    return false;
+  }
+};
+
 const FoliateViewer: React.FC<{
   bookKey: string;
   bookDoc: BookDoc;
@@ -182,7 +198,19 @@ const FoliateViewer: React.FC<{
           return data;
         })
         .catch((e) => {
-          console.error(new Error(`Failed to load ${detail.name}`, { cause: e }));
+          const error = new Error(`Failed to load ${detail.name}`, { cause: e });
+          if (isViewerAssetDebugEnabled()) {
+            console.error(error, {
+              bookKey,
+              resourceName: detail.name,
+              resourceType: detail.type,
+              showTranslateSource: getViewSettings(bookKey)?.showTranslateSource,
+              viewerConnected: containerRef.current?.isConnected ?? false,
+              docLoaded: docLoaded.current,
+            });
+          } else {
+            console.error(error);
+          }
           return '';
         });
     };
@@ -649,6 +677,11 @@ const FoliateViewer: React.FC<{
     viewSettings?.invertImgColorInDark,
     viewSettings?.hideScrollbar,
   ]);
+
+  useEffect(() => {
+    if (!viewSettings) return;
+    applyTranslationStyle(viewSettings);
+  }, [viewSettings]);
 
   useEffect(() => {
     const mountCustomFonts = async () => {

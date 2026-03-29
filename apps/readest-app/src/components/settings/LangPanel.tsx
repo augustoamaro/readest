@@ -226,16 +226,9 @@ const LangPanel: React.FC<SettingsPanelPanelProp> = ({ bookKey, onRegisterReset 
 
   useEffect(() => {
     if (showTranslateSource === viewSettings.showTranslateSource) return;
-    saveViewSettings(
-      envConfig,
-      bookKey,
-      'showTranslateSource',
-      showTranslateSource,
-      false,
-      false,
-    ).then(() => {
-      recreateViewer(envConfig, bookKey);
-    });
+    // Inline translation updates source/target DOM in place; recreating the viewer here can
+    // interrupt in-flight EPUB asset loads without changing the rendered chapter.
+    saveViewSettings(envConfig, bookKey, 'showTranslateSource', showTranslateSource, false, false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showTranslateSource]);
 
