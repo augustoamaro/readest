@@ -233,7 +233,7 @@ const LibraryPageContent = ({ searchParams }: { searchParams: ReadonlyURLSearchP
     const doCheckAppUpdates = async () => {
       if (appService?.hasUpdater && settings.autoCheckUpdates) {
         await checkForAppUpdates(_);
-      } else if (appService?.hasUpdater === false) {
+      } else if (appService?.hasUpdater === false && !appService?.isDesktopApp) {
         checkAppReleaseNotes();
       }
     };

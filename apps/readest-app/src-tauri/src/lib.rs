@@ -40,6 +40,7 @@ use transfer_file::{download_file, upload_file};
 
 const DEFAULT_APP_DBUS_ID: &str = "com.bilingify.readest";
 const DEFAULT_APP_TITLE: &str = "Readest";
+const LOCAL_FORK_IDENTIFIER: &str = "com.leonidas.readestlocal";
 
 fn compiled_app_dbus_id() -> &'static str {
     option_env!("DBUS_ID").unwrap_or(DEFAULT_APP_DBUS_ID)
@@ -160,6 +161,13 @@ struct SingleInstancePayload {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let context = tauri::generate_context!();
+    #[cfg(desktop)]
+    let updater_disabled = context.config().identifier == LOCAL_FORK_IDENTIFIER
+        || std::env::var("READEST_DISABLE_UPDATER").is_ok();
+    #[cfg(not(desktop))]
+    let updater_disabled = false;
+
     let builder = tauri::Builder::default()
         .plugin(
             tauri_plugin_log::Builder::new()
@@ -224,7 +232,11 @@ pub fn run() {
     let builder = builder.plugin(tauri_plugin_deep_link::init());
 
     #[cfg(desktop)]
-    let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+    let builder = if updater_disabled {
+        builder
+    } else {
+        builder.plugin(tauri_plugin_updater::Builder::new().build())
+    };
 
     #[cfg(desktop)]
     let builder = builder.plugin(tauri_plugin_window_state::Builder::default().build());
@@ -245,7 +257,7 @@ pub fn run() {
     let builder = builder.plugin(tauri_plugin_webdriver::init());
 
     builder
-        .setup(|#[allow(unused_variables)] app| {
+        .setup(move |#[allow(unused_variables)] app| {
             // When running with the webdriver feature (E2E/integration tests),
             // grant all default permissions to remote URLs (http://127.0.0.1:*)
             // so that Vitest browser-mode tests can call plugin commands.
@@ -313,11 +325,6 @@ pub fn run() {
                     .unwrap_or(false);
             #[cfg(not(target_os = "linux"))]
             let is_appimage = false;
-
-            #[cfg(desktop)]
-            let updater_disabled = std::env::var("READEST_DISABLE_UPDATER").is_ok();
-            #[cfg(not(desktop))]
-            let updater_disabled = false;
 
             let init_script = format!(
                 r#"
@@ -428,7 +435,7 @@ pub fn run() {
 
             Ok(())
         })
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while running tauri application")
         .run(
             #[allow(unused_variables)]

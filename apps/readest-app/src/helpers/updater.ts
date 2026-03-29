@@ -15,6 +15,9 @@ import {
 
 const LAST_CHECK_KEY = 'lastAppUpdateCheck';
 
+const isUpdaterDisabledForBuild = () =>
+  process.env['NEXT_PUBLIC_DISABLE_UPDATER'] || window.__READEST_UPDATER_DISABLED;
+
 const showUpdateWindow = (latestVersion: string) => {
   const win = new WebviewWindow('updater', {
     url: `/updater?latestVersion=${latestVersion}`,
@@ -36,6 +39,8 @@ export const checkForAppUpdates = async (
   _: TranslationFunc,
   isAutoCheck = true,
 ): Promise<boolean> => {
+  if (isUpdaterDisabledForBuild()) return false;
+
   const lastCheck = localStorage.getItem(LAST_CHECK_KEY);
   const now = Date.now();
   if (isAutoCheck && lastCheck && now - parseInt(lastCheck, 10) < CHECK_UPDATE_INTERVAL_SEC * 1000)
@@ -79,6 +84,8 @@ export const getLastShownReleaseNotesVersion = () => {
 };
 
 export const checkAppReleaseNotes = async (isAutoCheck = true) => {
+  if (isUpdaterDisabledForBuild()) return false;
+
   const currentVersion = getAppVersion();
   const lastShownVersion = getLastShownReleaseNotesVersion();
   if ((lastShownVersion && semver.gt(currentVersion, lastShownVersion)) || !isAutoCheck) {

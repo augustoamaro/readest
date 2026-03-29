@@ -56,3 +56,6 @@ result*
 .venv/
 __pycache__/
 *.py[cod]
+# Built AppImages (use Drive backup or release artifacts)
+*.AppImage
+Readest_Local-*.AppImage

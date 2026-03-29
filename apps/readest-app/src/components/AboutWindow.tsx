@@ -28,6 +28,7 @@ export const AboutWindow = () => {
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
   const [browserInfo, setBrowserInfo] = useState('');
   const [isOpen, setIsOpen] = useState(false);
+  const showReleaseNotesFallback = !appService?.hasUpdater && !appService?.isDesktopApp;
 
   useEffect(() => {
     setBrowserInfo(parseWebViewInfo(appService));
@@ -100,12 +101,29 @@ export const AboutWindow = () => {
             </div>
             <div className='my-1 h-5'>
               {!updateStatus && (
-                <button
-                  className='btn btn-sm btn-primary cursor-pointer p-1 text-xs'
-                  onClick={appService?.hasUpdater ? handleCheckUpdate : handleShowRecentUpdates}
-                >
-                  {_('Check Update')}
-                </button>
+                <>
+                  {appService?.hasUpdater && (
+                    <button
+                      className='btn btn-sm btn-primary cursor-pointer p-1 text-xs'
+                      onClick={handleCheckUpdate}
+                    >
+                      {_('Check Update')}
+                    </button>
+                  )}
+                  {showReleaseNotesFallback && (
+                    <button
+                      className='btn btn-sm btn-primary cursor-pointer p-1 text-xs'
+                      onClick={handleShowRecentUpdates}
+                    >
+                      {_('Check Update')}
+                    </button>
+                  )}
+                  {!appService?.hasUpdater && !showReleaseNotesFallback && (
+                    <p className='text-neutral-content mt-2 text-xs'>
+                      {_('Updates are disabled for this build')}
+                    </p>
+                  )}
+                </>
               )}
               {updateStatus === 'updated' && (
                 <p className='text-neutral-content mt-2 text-xs'>
