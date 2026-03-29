@@ -2,6 +2,7 @@ import { TranslationProvider } from '../types';
 import { deeplProvider } from './deepl';
 import { azureProvider } from './azure';
 import { googleProvider } from './google';
+import { localCTranslate2Provider } from './local-ctranslate2';
 import { yandexProvider } from './yandex';
 
 function createTranslator<T extends string>(
@@ -19,12 +20,14 @@ function createTranslator<T extends string>(
 const deeplTranslator = createTranslator('deepl', deeplProvider);
 const azureTranslator = createTranslator('azure', azureProvider);
 const googleTranslator = createTranslator('google', googleProvider);
+const localCTranslate2Translator = createTranslator('local-ctranslate2', localCTranslate2Provider);
 const yandexTranslator = createTranslator('yandex', yandexProvider);
 
 const availableTranslators = [
   deeplTranslator,
   azureTranslator,
   googleTranslator,
+  localCTranslate2Translator,
   yandexTranslator,
   // Add more translators here
 ];

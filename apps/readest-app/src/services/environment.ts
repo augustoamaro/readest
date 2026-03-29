@@ -14,6 +14,8 @@ export const isPWA = () => window.matchMedia('(display-mode: standalone)').match
 export const getBaseUrl = () => process.env['NEXT_PUBLIC_API_BASE_URL'] ?? READEST_WEB_BASE_URL;
 export const getNodeBaseUrl = () =>
   process.env['NEXT_PUBLIC_NODE_BASE_URL'] ?? READEST_NODE_BASE_URL;
+export const getLocalCTranslate2BaseUrl = () =>
+  process.env['NEXT_PUBLIC_LOCAL_CTRANSLATE2_BASE_URL'] ?? 'http://127.0.0.1:8765';
 
 export const isMacPlatform = () =>
   typeof window !== 'undefined' && /Mac|iPod|iPhone|iPad/.test(navigator.platform);
