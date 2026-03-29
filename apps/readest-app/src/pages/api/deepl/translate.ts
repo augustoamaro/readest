@@ -7,6 +7,10 @@ import {
   getSubscriptionPlan,
   validateUserAndToken,
 } from '@/utils/access';
+import {
+  recordDeepLProxyObservabilityEvent,
+  type DeepLProxyObservabilityEvent,
+} from './observability';
 import { ErrorCodes } from '@/services/translators';
 import { UsageStatsManager } from '@/utils/usage';
 
@@ -132,6 +136,8 @@ const updateDailyUsage = async (
   userId: string | undefined,
   token: string | undefined,
   incrementUsage: number,
+  signal?: AbortSignal,
+  requestId?: string,
 ) => {
   if (!userId || !token) return 0;
 
@@ -146,6 +152,14 @@ const updateDailyUsage = async (
         source: 'deepl_api',
       },
     );
+
+    if (signal?.aborted) {
+      recordDeepLProxyObservabilityEvent({
+        type: 'postAbortUsageUpdate',
+        timestamp: Date.now(),
+        requestId,
+      });
+    }
 
     return newUsage;
   } catch (cacheError) {
@@ -193,6 +207,35 @@ const handler = async (req: NextApiRequest, res: NextApiResponse) => {
     use_cache: useCache = false,
   }: { text: string[]; source_lang: string; target_lang: string; use_cache: boolean } = req.body;
   const abortBinding = createDeepLProxyAbortBinding(req, res);
+  const requestId = crypto.randomUUID();
+  const requestStartedAt = Date.now();
+  let requestFinalized = false;
+
+  const finalizeRequest = (
+    event: Exclude<DeepLProxyObservabilityEvent, { type: 'requestStarted' }>,
+  ) => {
+    if (requestFinalized) return;
+    requestFinalized = true;
+    recordDeepLProxyObservabilityEvent(event);
+  };
+
+  const handleAbortObserved = () => {
+    finalizeRequest({
+      type: 'requestAborted',
+      timestamp: Date.now(),
+      requestId,
+      durationMs: Date.now() - requestStartedAt,
+    });
+  };
+
+  abortBinding.signal.addEventListener('abort', handleAbortObserved, { once: true });
+  recordDeepLProxyObservabilityEvent({
+    type: 'requestStarted',
+    timestamp: requestStartedAt,
+    requestId,
+    charCount: text.reduce((sum, item) => sum + item.length, 0),
+    textCount: text.length,
+  });
 
   try {
     const translations = await Promise.all(
@@ -234,6 +277,7 @@ const handler = async (req: NextApiRequest, res: NextApiResponse) => {
           env['TRANSLATIONS_KV'],
           useCache,
           abortBinding.signal,
+          requestId,
         );
       }),
     );
@@ -246,6 +290,8 @@ const handler = async (req: NextApiRequest, res: NextApiResponse) => {
       user?.id,
       token,
       originalCharsCount + translatedCharsCount,
+      abortBinding.signal,
+      requestId,
     );
     throwIfDeepLProxyAborted(abortBinding.signal);
 
@@ -256,14 +302,38 @@ const handler = async (req: NextApiRequest, res: NextApiResponse) => {
     });
 
     if (abortBinding.signal.aborted || res.writableEnded) {
+      if (res.writableEnded && !abortBinding.signal.aborted) {
+        finalizeRequest({
+          type: 'requestFailed',
+          timestamp: Date.now(),
+          requestId,
+          durationMs: Date.now() - requestStartedAt,
+          reason: `response_sent:${res.statusCode}`,
+        });
+      }
       return;
     }
 
+    finalizeRequest({
+      type: 'requestSucceeded',
+      timestamp: Date.now(),
+      requestId,
+      durationMs: Date.now() - requestStartedAt,
+      translationCount: translations.length,
+    });
     return res.status(200).json({ translations });
   } catch (error) {
     if (isDeepLProxyAbortError(error) || abortBinding.signal.aborted) {
       return;
     }
+
+    finalizeRequest({
+      type: 'requestFailed',
+      timestamp: Date.now(),
+      requestId,
+      durationMs: Date.now() - requestStartedAt,
+      reason: error instanceof Error ? error.message : String(error),
+    });
 
     if (error instanceof Error && error.message.includes(ErrorCodes.DAILY_QUOTA_EXCEEDED)) {
       return res.status(429).json({ error: ErrorCodes.DAILY_QUOTA_EXCEEDED });
@@ -272,6 +342,7 @@ const handler = async (req: NextApiRequest, res: NextApiResponse) => {
     }
     return res.status(500).json({ error: ErrorCodes.INTERNAL_SERVER_ERROR });
   } finally {
+    abortBinding.signal.removeEventListener('abort', handleAbortObserved);
     abortBinding.dispose();
   }
 };
@@ -285,6 +356,7 @@ export async function callDeepLAPI(
   translationsKV: KVNamespace | undefined,
   useCache: boolean,
   signal?: AbortSignal,
+  requestId?: string,
 ) {
   const isV2Api = apiUrl.endsWith('/v2/translate');
   throwIfDeepLProxyAborted(signal);
@@ -306,37 +378,77 @@ export async function callDeepLAPI(
   if (isV2Api && requestBody.source_lang?.toUpperCase() === 'AUTO') {
     delete requestBody.source_lang;
   }
-
-  const response = await fetch(apiUrl, {
-    method: 'POST',
-    headers: {
-      Authorization: `DeepL-Auth-Key ${authKey}`,
-      'x-fingerprint': process.env['DEEPL_X_FINGERPRINT'] || '',
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(requestBody),
-    signal,
+  const downstreamStartedAt = Date.now();
+  recordDeepLProxyObservabilityEvent({
+    type: 'downstreamFetchStarted',
+    timestamp: downstreamStartedAt,
+    requestId,
+    textLength: input.length,
   });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`DeepL API error (${response.status}): ${errorText}`);
-  }
-
-  const data = (await response.json()) as {
-    translations?: { text: string; detected_source_language?: string }[];
-    data?: string;
-  };
-  throwIfDeepLProxyAborted(signal);
 
   let translatedText = '';
   let detectedSourceLanguage = '';
 
-  if (data.translations && data.translations.length > 0) {
-    translatedText = data.translations[0]!.text;
-    detectedSourceLanguage = data.translations[0]!.detected_source_language || '';
-  } else if (data.data) {
-    translatedText = data.data;
+  try {
+    const response = await fetch(apiUrl, {
+      method: 'POST',
+      headers: {
+        Authorization: `DeepL-Auth-Key ${authKey}`,
+        'x-fingerprint': process.env['DEEPL_X_FINGERPRINT'] || '',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(requestBody),
+      signal,
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`DeepL API error (${response.status}): ${errorText}`);
+    }
+
+    const data = (await response.json()) as {
+      translations?: { text: string; detected_source_language?: string }[];
+      data?: string;
+    };
+    throwIfDeepLProxyAborted(signal);
+
+    if (data.translations && data.translations.length > 0) {
+      translatedText = data.translations[0]!.text;
+      detectedSourceLanguage = data.translations[0]!.detected_source_language || '';
+    } else if (data.data) {
+      translatedText = data.data;
+    }
+
+    recordDeepLProxyObservabilityEvent({
+      type: 'downstreamFetchSucceeded',
+      timestamp: Date.now(),
+      requestId,
+      durationMs: Date.now() - downstreamStartedAt,
+      textLength: input.length,
+    });
+  } catch (error) {
+    const durationMs = Date.now() - downstreamStartedAt;
+
+    if (isDeepLProxyAbortError(error)) {
+      recordDeepLProxyObservabilityEvent({
+        type: 'downstreamFetchAborted',
+        timestamp: Date.now(),
+        requestId,
+        durationMs,
+        textLength: input.length,
+      });
+    } else {
+      recordDeepLProxyObservabilityEvent({
+        type: 'downstreamFetchFailed',
+        timestamp: Date.now(),
+        requestId,
+        durationMs,
+        textLength: input.length,
+        reason: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    throw error;
   }
 
   if (useCache && translationsKV && translatedText) {
@@ -344,6 +456,14 @@ export async function callDeepLAPI(
     try {
       const cacheKey = generateCacheKey(text, sourceLang, targetLang);
       await translationsKV.put(cacheKey, translatedText, { expirationTtl: 86400 * 90 });
+
+      if (signal?.aborted) {
+        recordDeepLProxyObservabilityEvent({
+          type: 'postAbortCacheWrite',
+          timestamp: Date.now(),
+          requestId,
+        });
+      }
     } catch (cacheError) {
       console.error('Cache storage error:', cacheError);
     }

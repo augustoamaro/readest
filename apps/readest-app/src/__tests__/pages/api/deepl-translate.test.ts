@@ -60,8 +60,12 @@ class MockRequest extends EventEmitter {
 }
 
 class MockResponse extends EventEmitter {
+  statusCode = 200;
   writableEnded = false;
-  status = vi.fn((_code: number) => this);
+  status = vi.fn((code: number) => {
+    this.statusCode = code;
+    return this;
+  });
   json = vi.fn((_body: unknown) => {
     this.writableEnded = true;
     return this;
@@ -69,9 +73,11 @@ class MockResponse extends EventEmitter {
 }
 
 describe('DeepL proxy abort handling', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks();
     vi.resetModules();
+    const { resetDeepLProxyObservability } = await import('@/pages/api/deepl/observability');
+    resetDeepLProxyObservability();
   });
 
   afterEach(() => {
@@ -139,6 +145,7 @@ describe('DeepL proxy abort handling', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     const { default: handler } = await import('@/pages/api/deepl/translate');
+    const { getDeepLProxyObservabilitySnapshot } = await import('@/pages/api/deepl/observability');
     const req = new MockRequest();
     const res = new MockResponse();
 
@@ -151,5 +158,52 @@ describe('DeepL proxy abort handling', () => {
     expect(res.status).not.toHaveBeenCalledWith(500);
     expect(res.json).not.toHaveBeenCalled();
     expect(usageStatsTrackUsageMock).not.toHaveBeenCalled();
+
+    const snapshot = getDeepLProxyObservabilitySnapshot();
+    expect(snapshot.metrics.requestsStarted).toBe(1);
+    expect(snapshot.metrics.requestsAborted).toBe(1);
+    expect(snapshot.metrics.downstreamFetchesStarted).toBe(1);
+    expect(snapshot.metrics.downstreamFetchesAborted).toBe(1);
+    expect(snapshot.derived.abortRate).toBe(1);
+    expect(snapshot.derived.averageAbortDurationMs).toBeGreaterThanOrEqual(0);
+    expect(snapshot.recentEvents.map((event) => event.type)).toEqual(
+      expect.arrayContaining([
+        'requestStarted',
+        'downstreamFetchStarted',
+        'downstreamFetchAborted',
+        'requestAborted',
+      ]),
+    );
+  });
+
+  it('tracks usage side effects that finish after the client aborts', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ translations: [{ text: 'ola' }] }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    let resolveUsageUpdate: ((value: number) => void) | undefined;
+    usageStatsTrackUsageMock.mockImplementationOnce(
+      () =>
+        new Promise<number>((resolve) => {
+          resolveUsageUpdate = resolve;
+        }),
+    );
+
+    const { default: handler } = await import('@/pages/api/deepl/translate');
+    const { getDeepLProxyObservabilitySnapshot } = await import('@/pages/api/deepl/observability');
+    const req = new MockRequest();
+    const res = new MockResponse();
+
+    const handlerPromise = handler(req as never, res as never);
+    await vi.waitFor(() => expect(usageStatsTrackUsageMock).toHaveBeenCalledTimes(1));
+    res.emit('close');
+    resolveUsageUpdate?.(10);
+    await handlerPromise;
+
+    const snapshot = getDeepLProxyObservabilitySnapshot();
+    expect(snapshot.metrics.postAbortUsageUpdates).toBe(1);
+    expect(snapshot.recentEvents.map((event) => event.type)).toContain('postAbortUsageUpdate');
   });
 });
