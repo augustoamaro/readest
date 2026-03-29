@@ -35,11 +35,16 @@ vi.mock('next/navigation', () => ({
 vi.mock('@/hooks/useTranslation', () => ({
   useTranslation: () => (key: string) => key,
 }));
-vi.mock('@/services/translators/cache', () => ({
-  initCache: vi.fn(),
-  loadCacheFromDB: vi.fn(),
-  pruneCache: vi.fn(),
-}));
+vi.mock('@/services/translators/cache', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/services/translators/cache')>();
+
+  return {
+    ...actual,
+    initCache: vi.fn(),
+    loadCacheFromDB: vi.fn(),
+    pruneCache: vi.fn(),
+  };
+});
 
 // ------------------------------
 // ENV PROVIDER WRAPPER
