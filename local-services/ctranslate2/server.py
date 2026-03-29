@@ -9,7 +9,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 
-SUPPORTED_SOURCE_LANGS = {"AUTO", "EN", "EN-US", "EN-GB"}
+SUPPORTED_SOURCE_LANGS = {"AUTO", "EN"}
 SUPPORTED_TARGET_LANGS = {"PT", "PT-BR", "PT-PT"}
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
@@ -49,13 +49,16 @@ class NLLBCTranslate2Translator:
             intra_threads=intra_threads,
         )
         self._tokenizer = AutoTokenizer.from_pretrained(tokenizer_name_or_path)
+        self.device = device
+        self.model_path = model_path
+        self.tokenizer_name_or_path = tokenizer_name_or_path
 
     def translate_batch(self, texts: list[str], source_lang: str, target_lang: str) -> list[str]:
-        normalized_source = source_lang.upper()
-        normalized_target = target_lang.upper()
+        normalized_source = normalize_source_lang(source_lang)
+        normalized_target = normalize_target_lang(target_lang)
         if normalized_source not in SUPPORTED_SOURCE_LANGS or normalized_target not in SUPPORTED_TARGET_LANGS:
             raise ValueError(
-                "Unsupported language pair. Local CTranslate2 currently supports EN -> PT only."
+                "Unsupported language pair. Local CTranslate2 currently supports AUTO/EN -> PT/PT-BR/PT-PT only."
             )
 
         cleaned_texts = [text.replace("\n", " ").strip() for text in texts]
@@ -80,6 +83,37 @@ class NLLBCTranslate2Translator:
         return translations
 
 
+def normalize_source_lang(source_lang: str) -> str:
+    normalized = str(source_lang).strip().replace("_", "-").upper()
+
+    if not normalized or normalized == "AUTO":
+        return "AUTO"
+
+    if normalized.split("-")[0] == "EN":
+        return "EN"
+
+    return normalized
+
+
+def normalize_target_lang(target_lang: str) -> str:
+    normalized = str(target_lang).strip().replace("_", "-").upper()
+
+    if not normalized:
+        return "PT"
+
+    parts = [part for part in normalized.split("-") if part]
+    if not parts or parts[0] != "PT":
+        return normalized
+
+    if "BR" in parts[1:]:
+        return "PT-BR"
+
+    if "PT" in parts[1:]:
+        return "PT-PT"
+
+    return "PT"
+
+
 def build_handler(translator: NLLBCTranslate2Translator):
     class LocalCTranslate2Handler(BaseHTTPRequestHandler):
         def do_OPTIONS(self) -> None:
@@ -96,6 +130,9 @@ def build_handler(translator: NLLBCTranslate2Translator):
                 {
                     "status": "ok",
                     "provider": "local-ctranslate2",
+                    "model_path": translator.model_path,
+                    "device": translator.device,
+                    "tokenizer": translator.tokenizer_name_or_path,
                     "supported_source_langs": sorted(SUPPORTED_SOURCE_LANGS),
                     "supported_target_langs": sorted(SUPPORTED_TARGET_LANGS),
                 },
@@ -116,8 +153,8 @@ def build_handler(translator: NLLBCTranslate2Translator):
                 return
 
             texts = payload.get("texts")
-            source_lang = str(payload.get("source_lang", "AUTO")).upper()
-            target_lang = str(payload.get("target_lang", "PT")).upper()
+            source_lang = normalize_source_lang(str(payload.get("source_lang", "AUTO")))
+            target_lang = normalize_target_lang(str(payload.get("target_lang", "PT")))
 
             if not isinstance(texts, list) or not all(isinstance(item, str) for item in texts):
                 json_response(self, 400, {"error": '"texts" must be an array of strings'})

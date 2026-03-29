@@ -7,7 +7,7 @@ import { useTranslation } from '@/hooks/useTranslation';
 import { useSettingsStore } from '@/store/settingsStore';
 import { saveViewSettings } from '@/helpers/settings';
 import { saveTranslationPreference } from '@/helpers/translationSettings';
-import { translationFacade } from '@/services/translators';
+import { translationFacade, type TranslationProviderAvailability } from '@/services/translators';
 import { useResetViewSettings } from '@/hooks/useResetSettings';
 import { TRANSLATED_LANGS, TRANSLATOR_LANGS } from '@/services/constants';
 import { ConvertChineseVariant } from '@/types/book';
@@ -15,6 +15,8 @@ import { SettingsPanelPanelProp } from './SettingsDialog';
 import { getDirFromLanguage } from '@/utils/rtl';
 import { isCJKEnv } from '@/utils/misc';
 import Select from '@/components/Select';
+
+const LOCAL_CTRANSLATE2_PROVIDER = 'local-ctranslate2';
 
 const LangPanel: React.FC<SettingsPanelPanelProp> = ({ bookKey, onRegisterReset }) => {
   const _ = useTranslation();
@@ -37,6 +39,10 @@ const LangPanel: React.FC<SettingsPanelPanelProp> = ({ bookKey, onRegisterReset 
   const [convertChineseVariant, setConvertChineseVariant] = useState(
     viewSettings.convertChineseVariant,
   );
+  const [localProviderAvailability, setLocalProviderAvailability] =
+    useState<TranslationProviderAvailability>(() =>
+      translationFacade.getProviderAvailability(LOCAL_CTRANSLATE2_PROVIDER),
+    );
 
   const resetToDefaults = useResetViewSettings();
 
@@ -56,6 +62,21 @@ const LangPanel: React.FC<SettingsPanelPanelProp> = ({ bookKey, onRegisterReset 
     onRegisterReset(handleReset);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    let mounted = true;
+    void translationFacade
+      .refreshProviderAvailability(LOCAL_CTRANSLATE2_PROVIDER)
+      .then((availability) => {
+        if (mounted) {
+          setLocalProviderAvailability(availability);
+        }
+      });
+
+    return () => {
+      mounted = false;
+    };
+  }, [translationProvider]);
 
   const getCurrentUILangOption = () => {
     const uiLanguage = viewSettings.uiLanguage;
@@ -82,14 +103,31 @@ const LangPanel: React.FC<SettingsPanelPanelProp> = ({ bookKey, onRegisterReset 
 
   const getTranslationProviderOptions = () => {
     const translators = translationFacade.listProviders();
-    const availableProviders = translators.map((t) => {
+    const availableProviders = translators.flatMap((t) => {
+      const isLocalProvider = t.name === LOCAL_CTRANSLATE2_PROVIDER;
+      if (
+        isLocalProvider &&
+        localProviderAvailability.status === 'unavailable' &&
+        translationProvider !== t.name
+      ) {
+        return [];
+      }
+
       let label = t.label;
       if (t.authRequired && !token) {
         label = `${label} (${_('Login Required')})`;
       } else if (t.quotaExceeded) {
         label = `${label} (${_('Quota Exceeded')})`;
+      } else if (isLocalProvider) {
+        if (localProviderAvailability.status === 'available') {
+          label = `${label} (${_('Local Ready')})`;
+        } else if (localProviderAvailability.status === 'unavailable') {
+          label = `${label} (${_('Offline')})`;
+        } else {
+          label = `${label} (${_('Checking')})`;
+        }
       }
-      return { value: t.name, label };
+      return [{ value: t.name, label }];
     });
     return availableProviders;
   };
@@ -97,11 +135,30 @@ const LangPanel: React.FC<SettingsPanelPanelProp> = ({ bookKey, onRegisterReset 
   const getCurrentTranslationProviderOption = () => {
     const value = translationProvider;
     const allProviders = getTranslationProviderOptions();
-    const availableTranslators = translationFacade.listSelectableProviders(token);
-    const currentProvider = availableTranslators.find((t) => t.name === value)
+    const currentProvider = allProviders.find((provider) => provider.value === value)
       ? value
-      : availableTranslators[0]?.name;
+      : allProviders[0]?.value;
     return allProviders.find((p) => p.value === currentProvider) || allProviders[0]!;
+  };
+
+  const getLocalProviderHint = () => {
+    if (translationProvider !== LOCAL_CTRANSLATE2_PROVIDER) return null;
+
+    if (localProviderAvailability.status === 'available') {
+      return _('Local CTranslate2 service ready{{device}}.', {
+        device: localProviderAvailability.details?.device
+          ? ` (${localProviderAvailability.details.device})`
+          : '',
+      });
+    }
+
+    if (localProviderAvailability.status === 'unavailable') {
+      return _(
+        'Local CTranslate2 service is offline. Start the local translation server to use this provider.',
+      );
+    }
+
+    return _('Checking local CTranslate2 service...');
   };
 
   const handleSelectTranslationProvider = (event: React.ChangeEvent<HTMLSelectElement>) => {
@@ -303,6 +360,11 @@ const LangPanel: React.FC<SettingsPanelPanelProp> = ({ bookKey, onRegisterReset 
                 options={getTranslationProviderOptions()}
               />
             </div>
+            {translationProvider === LOCAL_CTRANSLATE2_PROVIDER && (
+              <div className='px-4 pb-3 pt-0 text-right text-xs opacity-70'>
+                {getLocalProviderHint()}
+              </div>
+            )}
 
             <div className='config-item' data-setting-id='settings.language.targetLanguage'>
               <span className=''>{_('Translate To')}</span>

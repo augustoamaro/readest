@@ -40,6 +40,18 @@ export function useTranslator({
 
   const handleTranslationError = useCallback(
     (err: unknown) => {
+      if (err instanceof Error && err.message === ErrorCodes.LOCAL_SERVICE_UNAVAILABLE) {
+        eventDispatcher.dispatch('toast', {
+          timeout: 5000,
+          message: _(
+            'Local CTranslate2 service is offline. Start the local translation server and try again.',
+          ),
+          type: 'error',
+        });
+        void translationFacade.refreshProviderAvailability('local-ctranslate2', { force: true });
+        return;
+      }
+
       if (err instanceof TranslationServiceError && err.code === ErrorCodes.DAILY_QUOTA_EXCEEDED) {
         eventDispatcher.dispatch('toast', {
           timeout: 5000,

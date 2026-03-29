@@ -1,11 +1,17 @@
 import { getTranslator, getTranslators, TranslatorName } from './providers';
 import {
+  isTranslationAbortError,
   resolveTranslatorSelection,
   translateTexts,
   TranslationServiceError,
   type TranslatorSelection,
 } from './service';
-import { TranslationProvider, TranslationRequestOptions, UseTranslatorOptions } from './types';
+import {
+  TranslationProvider,
+  TranslationProviderAvailability,
+  TranslationRequestOptions,
+  UseTranslatorOptions,
+} from './types';
 
 export interface TranslationBatchCommand extends UseTranslatorOptions, TranslationRequestOptions {
   texts: string[];
@@ -62,11 +68,22 @@ const defaultDependencies: TranslationFacadeDependencies = {
 };
 
 const DEFAULT_PROVIDER: TranslatorName = 'deepl';
+const AVAILABILITY_CACHE_TTL_MS = 15_000;
+
+export interface RefreshProviderAvailabilityOptions {
+  force?: boolean;
+  signal?: AbortSignal;
+}
 
 export interface TranslationFacade {
   listProviders: () => TranslationProvider[];
   listSelectableProviders: (token?: string | null) => TranslationProvider[];
   getProvider: (name: TranslatorName) => TranslationProvider | undefined;
+  getProviderAvailability: (name: TranslatorName) => TranslationProviderAvailability;
+  refreshProviderAvailability: (
+    name: TranslatorName,
+    options?: RefreshProviderAvailabilityOptions,
+  ) => Promise<TranslationProviderAvailability>;
   resolveProviderSelection: (params: {
     provider: TranslatorName;
     token?: string | null;
@@ -82,6 +99,7 @@ export interface TranslationFacade {
 export const createTranslationFacade = (
   dependencies: TranslationFacadeDependencies = defaultDependencies,
 ): TranslationFacade => {
+  const availabilityCache = new Map<TranslatorName, TranslationProviderAvailability>();
   const listProviders = () => dependencies.getTranslators();
 
   const listSelectableProviders = (token?: string | null) =>
@@ -91,6 +109,70 @@ export const createTranslationFacade = (
     });
 
   const getProvider = (name: TranslatorName) => dependencies.getTranslator(name);
+
+  const getDefaultProviderAvailability = (
+    provider?: TranslationProvider,
+  ): TranslationProviderAvailability => ({
+    status: provider?.checkAvailability ? 'unknown' : 'available',
+    checkedAt: 0,
+  });
+
+  const getProviderAvailability = (name: TranslatorName) => {
+    return availabilityCache.get(name) ?? getDefaultProviderAvailability(getProvider(name));
+  };
+
+  const refreshProviderAvailability = async (
+    name: TranslatorName,
+    options?: RefreshProviderAvailabilityOptions,
+  ): Promise<TranslationProviderAvailability> => {
+    const provider = getProvider(name);
+    const now = Date.now();
+    const cached = availabilityCache.get(name);
+
+    if (!provider) {
+      return {
+        status: 'unavailable',
+        checkedAt: now,
+        message: `Unknown provider: ${name}`,
+      };
+    }
+
+    if (!provider.checkAvailability) {
+      const availability = {
+        status: 'available' as const,
+        checkedAt: now,
+      };
+      availabilityCache.set(name, availability);
+      return availability;
+    }
+
+    if (
+      !options?.force &&
+      cached &&
+      cached.checkedAt > 0 &&
+      now - cached.checkedAt < AVAILABILITY_CACHE_TTL_MS
+    ) {
+      return cached;
+    }
+
+    try {
+      const availability = await provider.checkAvailability(options?.signal);
+      availabilityCache.set(name, availability);
+      return availability;
+    } catch (error) {
+      if (isTranslationAbortError(error)) {
+        return cached ?? getDefaultProviderAvailability(provider);
+      }
+
+      const availability = {
+        status: 'unavailable' as const,
+        checkedAt: now,
+        message: error instanceof Error ? error.message : String(error),
+      };
+      availabilityCache.set(name, availability);
+      return availability;
+    }
+  };
 
   const resolveProviderSelection = ({
     provider,
@@ -173,6 +255,8 @@ export const createTranslationFacade = (
     listProviders,
     listSelectableProviders,
     getProvider,
+    getProviderAvailability,
+    refreshProviderAvailability,
     resolveProviderSelection,
     translateBatch,
     translateSelection,

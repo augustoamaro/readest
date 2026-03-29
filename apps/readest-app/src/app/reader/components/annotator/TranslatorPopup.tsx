@@ -10,7 +10,13 @@ import {
   saveTranslationPreference,
 } from '@/helpers/translationSettings';
 import { TRANSLATOR_LANGS } from '@/services/constants';
-import { translationFacade, TranslatorName, UseTranslatorOptions } from '@/services/translators';
+import {
+  ErrorCodes,
+  translationFacade,
+  TranslatorName,
+  type TranslationProviderAvailability,
+  UseTranslatorOptions,
+} from '@/services/translators';
 import { useReaderStore } from '@/store/readerStore';
 import Select from '@/components/Select';
 
@@ -23,6 +29,7 @@ const generateTranslatorLangs = () => {
 };
 
 const translatorLangs = generateTranslatorLangs();
+const LOCAL_CTRANSLATE2_PROVIDER: TranslatorName = 'local-ctranslate2';
 
 interface TranslatorPopupProps {
   bookKey: string;
@@ -60,6 +67,10 @@ const TranslatorPopup: React.FC<TranslatorPopupProps> = ({
   const [provider, setProvider] = useState(translationPreferences.translationProvider);
   const [translation, setTranslation] = useState<string | null>(null);
   const [detectedSourceLang, setDetectedSourceLang] = useState<string | null>(null);
+  const [localProviderAvailability, setLocalProviderAvailability] =
+    useState<TranslationProviderAvailability>(() =>
+      translationFacade.getProviderAvailability(LOCAL_CTRANSLATE2_PROVIDER),
+    );
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -109,18 +120,69 @@ const TranslatorPopup: React.FC<TranslatorPopupProps> = ({
   }, [translationPreferences.translateTargetLang, translationPreferences.translationProvider]);
 
   useEffect(() => {
+    let mounted = true;
+    void translationFacade
+      .refreshProviderAvailability(LOCAL_CTRANSLATE2_PROVIDER)
+      .then((availability) => {
+        if (mounted) {
+          setLocalProviderAvailability(availability);
+        }
+      });
+
+    return () => {
+      mounted = false;
+    };
+  }, [provider]);
+
+  useEffect(() => {
     const availableProviders = translators.map((t) => {
+      if (
+        t.name === LOCAL_CTRANSLATE2_PROVIDER &&
+        localProviderAvailability.status === 'unavailable' &&
+        provider !== t.name
+      ) {
+        return null;
+      }
+
       let label = t.label;
       if (t.authRequired && !token) {
         label = `${label} (${_('Login Required')})`;
       } else if (t.quotaExceeded) {
         label = `${label} (${_('Quota Exceeded')})`;
+      } else if (t.name === LOCAL_CTRANSLATE2_PROVIDER) {
+        if (localProviderAvailability.status === 'available') {
+          label = `${label} (${_('Local Ready')})`;
+        } else if (localProviderAvailability.status === 'unavailable') {
+          label = `${label} (${_('Offline')})`;
+        } else {
+          label = `${label} (${_('Checking')})`;
+        }
       }
       return { name: t.name, label };
     });
-    setProviders(availableProviders);
+    setProviders(availableProviders.filter((item): item is TranslatorType => !!item));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [translators]);
+  }, [localProviderAvailability, provider, token, translators]);
+
+  const getProviderStatusLabel = () => {
+    if (provider !== LOCAL_CTRANSLATE2_PROVIDER) {
+      return providers.find((p) => p.name === provider)?.label;
+    }
+
+    if (localProviderAvailability.status === 'available') {
+      return _('Local service ready{{device}}.', {
+        device: localProviderAvailability.details?.device
+          ? ` (${localProviderAvailability.details.device})`
+          : '',
+      });
+    }
+
+    if (localProviderAvailability.status === 'unavailable') {
+      return _('Local service offline');
+    }
+
+    return _('Checking local service...');
+  };
 
   useEffect(() => {
     setLoading(true);
@@ -144,7 +206,13 @@ const TranslatorPopup: React.FC<TranslatorPopupProps> = ({
         }
       } catch (err) {
         console.error(err);
-        if (!token) {
+        if (err instanceof Error && err.message === ErrorCodes.LOCAL_SERVICE_UNAVAILABLE) {
+          setError(
+            _(
+              'Local CTranslate2 service is offline. Start the local translation server and try again.',
+            ),
+          );
+        } else if (!token) {
           setError(_('Unable to fetch the translation. Please log in first and try again.'));
         } else {
           setError(_('Unable to fetch the translation. Try again later.'));
@@ -228,12 +296,15 @@ const TranslatorPopup: React.FC<TranslatorPopupProps> = ({
         </div>
         <div className='absolute bottom-0 flex h-8 w-full items-center justify-between px-4'>
           <div className='line-clamp-1 text-xs opacity-60'>
-            {provider &&
-              !loading &&
-              !error &&
-              _('Translated by {{provider}}.', {
-                provider: providers.find((p) => p.name === provider)?.label,
-              })}
+            {provider && !loading && !error
+              ? provider === LOCAL_CTRANSLATE2_PROVIDER
+                ? getProviderStatusLabel()
+                : _('Translated by {{provider}}.', {
+                    provider: providers.find((p) => p.name === provider)?.label,
+                  })
+              : provider === LOCAL_CTRANSLATE2_PROVIDER
+                ? getProviderStatusLabel()
+                : null}
           </div>
           <Select
             className='not-eink:bg-gray-600 not-eink:text-white eink:bg-base-100'

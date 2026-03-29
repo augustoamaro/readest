@@ -146,4 +146,26 @@ describe('translationFacade', () => {
       expect.objectContaining({ input: ['p1', 'p2'] }),
     );
   });
+
+  it('caches provider availability when a provider exposes an explicit healthcheck', async () => {
+    const checkAvailability = vi.fn(async () => ({
+      status: 'available' as const,
+      checkedAt: Date.now(),
+      details: { device: 'cuda' },
+    }));
+    const dependencies = createDependencies([
+      createTranslator('local-ctranslate2', { checkAvailability }),
+    ]);
+    const facade = createTranslationFacade(dependencies);
+
+    expect(facade.getProviderAvailability('local-ctranslate2').status).toBe('unknown');
+
+    const first = await facade.refreshProviderAvailability('local-ctranslate2');
+    const second = await facade.refreshProviderAvailability('local-ctranslate2');
+
+    expect(checkAvailability).toHaveBeenCalledTimes(1);
+    expect(first.status).toBe('available');
+    expect(second.details?.device).toBe('cuda');
+    expect(facade.getProviderAvailability('local-ctranslate2').status).toBe('available');
+  });
 });

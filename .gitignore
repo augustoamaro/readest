@@ -53,3 +53,6 @@ result*
 .claude/worktrees
 .claude/settings.local.json
 
+.venv/
+__pycache__/
+*.py[cod]
