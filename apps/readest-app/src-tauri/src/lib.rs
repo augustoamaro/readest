@@ -38,6 +38,17 @@ use tauri_plugin_oauth::start;
 use tauri_plugin_opener::OpenerExt;
 use transfer_file::{download_file, upload_file};
 
+const DEFAULT_APP_DBUS_ID: &str = "com.bilingify.readest";
+const DEFAULT_APP_TITLE: &str = "Readest";
+
+fn compiled_app_dbus_id() -> &'static str {
+    option_env!("DBUS_ID").unwrap_or(DEFAULT_APP_DBUS_ID)
+}
+
+fn compiled_app_title() -> &'static str {
+    option_env!("READEST_APP_TITLE").unwrap_or(DEFAULT_APP_TITLE)
+}
+
 #[cfg(desktop)]
 fn allow_file_in_scopes(app: &AppHandle, files: Vec<PathBuf>) {
     let fs_scope = app.fs_scope();
@@ -206,7 +217,7 @@ pub fn run() {
                 app.emit("single-instance", SingleInstancePayload { args: argv, cwd })
                     .unwrap();
             })
-            .dbus_id("com.bilingify.readest".to_owned())
+            .dbus_id(compiled_app_dbus_id().to_owned())
             .build(),
     );
 
@@ -390,7 +401,7 @@ pub fn run() {
                     .decorations(false)
                     .visible(false)
                     .shadow(true)
-                    .title("Readest");
+                    .title(compiled_app_title());
 
                 #[cfg(target_os = "windows")]
                 {

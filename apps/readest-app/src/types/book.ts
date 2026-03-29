@@ -241,6 +241,7 @@ export interface TranslatorConfig {
   translationProvider: string;
   translateTargetLang: string;
   showTranslateSource: boolean;
+  dimTranslateSourceText: boolean;
   ttsReadAloudText: string;
 }
 

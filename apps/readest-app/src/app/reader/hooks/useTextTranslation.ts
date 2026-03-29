@@ -32,6 +32,7 @@ export function useTextTranslation(
   const [provider, setProvider] = useState(translationPreferences.translationProvider);
   const [targetLang, setTargetLang] = useState(translationPreferences.translateTargetLang);
   const showTranslateSourceRef = useRef(viewSettings?.showTranslateSource);
+  const dimTranslateSourceTextRef = useRef(viewSettings?.dimTranslateSourceText ?? false);
 
   const { translateVisibleBlocks } = useTranslator({
     provider,
@@ -66,6 +67,26 @@ export function useTextTranslation(
           target.classList.add('hidden');
         }
       });
+    });
+    toggleSourceTextDimming(shouldDimSourceText());
+  };
+
+  const shouldDimSourceText = () =>
+    Boolean(enabled.current && showTranslateSourceRef.current && dimTranslateSourceTextRef.current);
+
+  const toggleSourceTextDimmingForElement = (element: HTMLElement, dimmed: boolean) => {
+    if (element.classList.contains('translation-source')) {
+      element.classList.toggle('translation-source-dimmed', dimmed);
+    }
+    const sourceNodes = element.querySelectorAll('.translation-source');
+    sourceNodes.forEach((node) => {
+      node.classList.toggle('translation-source-dimmed', dimmed);
+    });
+  };
+
+  const toggleSourceTextDimming = (dimmed: boolean) => {
+    translatedElements.current.forEach((element) => {
+      toggleSourceTextDimmingForElement(element, dimmed);
     });
   };
 
@@ -122,6 +143,7 @@ export function useTextTranslation(
   const updateTranslation = () => {
     coordinatorRef.current?.cancel();
     elementsByTranslationIdRef.current.clear();
+    toggleSourceTextDimming(false);
     if (batchTimerRef.current) {
       clearTimeout(batchTimerRef.current);
       batchTimerRef.current = null;
@@ -317,6 +339,7 @@ export function useTextTranslation(
           if (!liveText || liveText !== block.originalText) return;
 
           updateSourceNodes(element);
+          toggleSourceTextDimmingForElement(element, shouldDimSourceText());
           element.appendChild(wrapper);
           translatedElements.current.push(element);
         });
@@ -396,6 +419,8 @@ export function useTextTranslation(
     const targetLangChanged = targetLang !== translationPreferences.translateTargetLang;
     const showTranslateSourceChanged =
       showTranslateSourceRef.current !== viewSettings.showTranslateSource;
+    const dimTranslateSourceTextChanged =
+      dimTranslateSourceTextRef.current !== (viewSettings.dimTranslateSourceText ?? false);
 
     if (enabledChanged) {
       enabled.current = viewSettings.translationEnabled;
@@ -413,6 +438,10 @@ export function useTextTranslation(
       showTranslateSourceRef.current = viewSettings.showTranslateSource;
     }
 
+    if (dimTranslateSourceTextChanged) {
+      dimTranslateSourceTextRef.current = viewSettings.dimTranslateSourceText ?? false;
+    }
+
     if (enabledChanged) {
       toggleTranslationVisibility(viewSettings.translationEnabled);
       if (enabled.current) {
@@ -420,6 +449,8 @@ export function useTextTranslation(
       }
     } else if (providerChanged || targetLangChanged || showTranslateSourceChanged) {
       updateTranslation();
+    } else if (dimTranslateSourceTextChanged) {
+      toggleSourceTextDimming(shouldDimSourceText());
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bookKey, viewSettings, provider, targetLang]);
@@ -441,6 +472,7 @@ export function useTextTranslation(
         view.removeEventListener('load', hintInitialTranslating);
       }
       observerRef.current?.disconnect();
+      toggleSourceTextDimming(false);
       translatedElements.current = [];
       coordinatorRef.current?.cancel();
       elementsByTranslationId.clear();

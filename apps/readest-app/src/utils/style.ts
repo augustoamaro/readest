@@ -521,6 +521,13 @@ export const getFootnoteStyles = () => `
 const getTranslationStyles = (showSource: boolean) => `
   .translation-source {
   }
+  .translation-source.translation-source-dimmed {
+    color: color-mix(in srgb, currentColor 55%, var(--theme-bg-color)) !important;
+  }
+  .translation-source.translation-source-dimmed .translation-target,
+  .translation-source.translation-source-dimmed .translation-target * {
+    color: var(--theme-fg-color) !important;
+  }
   .translation-target {
   }
   .translation-target.hidden {

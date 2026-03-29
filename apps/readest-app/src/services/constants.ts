@@ -302,6 +302,7 @@ export const DEFAULT_TRANSLATOR_CONFIG: TranslatorConfig = {
   translationProvider: 'deepl',
   translateTargetLang: '',
   showTranslateSource: true,
+  dimTranslateSourceText: false,
   ttsReadAloudText: 'both',
 };
 

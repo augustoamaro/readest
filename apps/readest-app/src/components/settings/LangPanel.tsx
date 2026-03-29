@@ -32,6 +32,9 @@ const LangPanel: React.FC<SettingsPanelPanelProp> = ({ bookKey, onRegisterReset 
   const [translationProvider, setTranslationProvider] = useState(viewSettings.translationProvider);
   const [translateTargetLang, setTranslateTargetLang] = useState(viewSettings.translateTargetLang);
   const [showTranslateSource, setShowTranslateSource] = useState(viewSettings.showTranslateSource);
+  const [dimTranslateSourceText, setDimTranslateSourceText] = useState(
+    viewSettings.dimTranslateSourceText ?? false,
+  );
   const [ttsReadAloudText, setTtsReadAloudText] = useState(viewSettings.ttsReadAloudText);
   const [replaceQuotationMarks, setReplaceQuotationMarks] = useState(
     viewSettings.replaceQuotationMarks,
@@ -53,6 +56,7 @@ const LangPanel: React.FC<SettingsPanelPanelProp> = ({ bookKey, onRegisterReset 
       translationProvider: setTranslationProvider,
       translateTargetLang: setTranslateTargetLang,
       showTranslateSource: setShowTranslateSource,
+      dimTranslateSourceText: setDimTranslateSourceText,
       ttsReadAloudText: setTtsReadAloudText,
       replaceQuotationMarks: setReplaceQuotationMarks,
     });
@@ -233,6 +237,19 @@ const LangPanel: React.FC<SettingsPanelPanelProp> = ({ bookKey, onRegisterReset 
   }, [showTranslateSource]);
 
   useEffect(() => {
+    if (dimTranslateSourceText === (viewSettings.dimTranslateSourceText ?? false)) return;
+    saveViewSettings(
+      envConfig,
+      bookKey,
+      'dimTranslateSourceText',
+      dimTranslateSourceText,
+      false,
+      false,
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dimTranslateSourceText]);
+
+  useEffect(() => {
     if (ttsReadAloudText === viewSettings.ttsReadAloudText) return;
     saveViewSettings(envConfig, bookKey, 'ttsReadAloudText', ttsReadAloudText, false, false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -335,6 +352,18 @@ const LangPanel: React.FC<SettingsPanelPanelProp> = ({ bookKey, onRegisterReset 
                 onChange={() => setShowTranslateSource(!showTranslateSource)}
               />
             </div>
+
+            {showTranslateSource && (
+              <div className='config-item' data-setting-id='settings.language.dimSourceText'>
+                <span className=''>{_('Dim Source Text')}</span>
+                <input
+                  type='checkbox'
+                  className='toggle'
+                  checked={dimTranslateSourceText}
+                  onChange={() => setDimTranslateSourceText(!dimTranslateSourceText)}
+                />
+              </div>
+            )}
 
             <div className='config-item' data-setting-id='settings.language.ttsTextTranslation'>
               <span className=''>{_('TTS Text')}</span>

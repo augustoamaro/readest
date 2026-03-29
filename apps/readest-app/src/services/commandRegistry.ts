@@ -493,6 +493,12 @@ const languagePanelItems = [
     section: 'Translation',
   },
   {
+    id: 'settings.language.dimSourceText',
+    labelKey: _('Dim Source Text'),
+    keywords: ['translation', 'source', 'original', 'dim', 'faded'],
+    section: 'Translation',
+  },
+  {
     id: 'settings.language.translationProvider',
     labelKey: _('Translation Service'),
     keywords: ['translation', 'provider', 'google', 'deepl', 'service'],
